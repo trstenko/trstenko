@@ -1,0 +1,16 @@
+# Drivers. These only install on the board, which is why they are not in
+# requirements.txt -- a PC checking out this repo should still be able to run
+# the emulator and the tests.
+-r requirements.txt
+
+# 2.4" Waveshare 18366, an ILI9341. One package covers ILI9341 and ST7789 with
+# the same API, so a panel change is an import rather than a rewrite.
+adafruit-circuitpython-rgb-display>=3.12
+adafruit-blinka>=8.0
+RPi.GPIO>=0.7
+
+# Capture from the ReSpeaker Lite, which enumerates as a USB audio device.
+pyalsaaudio>=0.10
+
+# The setup QR code on the panel.
+qrcode>=7.4

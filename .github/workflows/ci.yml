@@ -1,0 +1,52 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Only the firmware's own dependencies. The emulator's test suite runs
+      # without a sound card, a display or PortAudio, and keeping it that way
+      # is the point of the headless rig.
+      - name: Install
+        run: pip install -r firmware/requirements.txt
+
+      - name: firmware/ stays installable on a robot
+        run: python -m tools.check_layout
+
+      - name: The emulator's scenarios
+        run: python -m tools.emulator.headless
+
+      # The baked face data is generated from an After Effects export that
+      # lives outside this repo, so CI can only check it when the export is
+      # there. `--check` says so and passes rather than failing on a machine
+      # that was never going to have it.
+      - name: Face data is not stale
+        run: python -m tools.face.bake --check
+
+      - name: A release can still be built and signed
+        run: |
+          python -m tools.release keygen --out /tmp/ci-key.json
+          python -m tools.release build \
+            --version "$(cat firmware/VERSION)" \
+            --out /tmp/dist --key /tmp/ci-key.json
+          python - <<'PY'
+          import json
+          from firmware.updates import signing
+          manifest = json.load(open("/tmp/dist/update.json"))
+          key = bytes.fromhex(json.load(open("/tmp/ci-key.json"))["public"])
+          ok, key_id, reason = signing.check(manifest, [key])
+          assert ok, reason
+          print("manifest verifies against key", key_id)
+          PY

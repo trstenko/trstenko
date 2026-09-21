@@ -1,0 +1,9 @@
+[Unit]
+Description=Trstenko — the app failed too many times, go back
+
+[Service]
+Type=oneshot
+# bootcheck with the attempt count already past the limit: it rolls back and
+# exits. Then the app is started again, from the previous release.
+ExecStart=/usr/bin/python3 /opt/trstenko/bin/bootcheck.py /opt/trstenko
+ExecStartPost=/usr/bin/systemctl restart trstenko.service

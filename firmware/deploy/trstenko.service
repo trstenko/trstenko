@@ -1,0 +1,25 @@
+[Unit]
+Description=Trstenko
+# bootcheck runs first and may point `current` at the previous release, so
+# this unit must resolve the symlink after it has finished, not before.
+After=network.target trstenko-bootcheck.service sound.target
+Requires=trstenko-bootcheck.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/trstenko/current
+ExecStart=/opt/trstenko/current/venv/bin/python -m firmware.main
+Environment=TRSTENKO_ROOT=/opt/trstenko
+Environment=TRSTENKO_DATA=/var/lib/trstenko
+Restart=always
+RestartSec=3
+
+# Five failures in a minute is a release that does not work. Give up rather
+# than restart-looping: bootcheck counts those boots and rolls back, and a
+# tight loop only burns the SD card while it does.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+OnFailure=trstenko-rollback.service
+
+[Install]
+WantedBy=multi-user.target

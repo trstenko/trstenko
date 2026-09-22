@@ -37,6 +37,13 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._static(path)
 
+    def _token(self):
+        """`Authorization: Bearer <token>`, as the page sends it."""
+        header = self.headers.get("Authorization") or ""
+        if header.lower().startswith("bearer "):
+            return header[7:].strip()
+        return self.headers.get("X-Trstenko-Token", "").strip()
+
     def do_POST(self):
         path = self.path.split("?", 1)[0]
         length = int(self.headers.get("Content-Length") or 0)
@@ -50,7 +57,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._api("POST", path, body)
 
     def _api(self, method, path, body):
-        status, payload = self.api.dispatch(method, path, body)
+        status, payload = self.api.dispatch(method, path, body, self._token())
         self._send(status, json.dumps(payload).encode("utf-8"),
                    "application/json")
 

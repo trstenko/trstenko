@@ -28,7 +28,7 @@ from PIL import Image, ImageDraw, ImageTk
 from firmware.device import Device
 from firmware.hal.base import POWER, VOL_DOWN, VOL_UP
 from firmware.updates import GitHubReleases, UpdateConfig, UpdateManager
-from firmware.webui import UpdateApi, serve
+from firmware.webui import Auth, UpdateApi, serve
 
 from . import audio as audio_mod
 from .fake_releases import FakeReleases
@@ -94,7 +94,10 @@ class Emulator(tk.Tk):
         self.device = Device(self.hal, self.pipeline, self.updater,
                              on_log=self.log, on_setup=self._setup)
 
-        self.api = UpdateApi(self.updater, self.device)
+        # Locked like the real one. The device shows its PIN on the panel
+        # next to the setup QR code; here the log is the panel.
+        self.auth = Auth(args.data_root, log=self.log)
+        self.api = UpdateApi(self.updater, self.device, self.auth)
         self.server = serve(self.api, host="127.0.0.1", port=args.port)
         self.url = "http://127.0.0.1:%d/" % args.port
 
@@ -124,6 +127,7 @@ class Emulator(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.quit_all)
 
         self.log("emulator up — update page at %s" % self.url)
+        self.log("pairing PIN for the page: %s" % self.auth.pin)
         self._tick()
 
     # ---- layout ----
@@ -641,6 +645,11 @@ class Emulator(tk.Tk):
         sentence and pushed everything useful off the top.
         """
         stamp = time.strftime("%H:%M:%S")
+        if not hasattr(self, "logbox"):
+            # Something logged while the window was still being built. The
+            # pairing PIN does this when it cannot be written to disk.
+            print("%s  %s" % (stamp, line))
+            return
         self.logbox.configure(state="normal")
         if line == self._last_log:
             self._last_log_count += 1

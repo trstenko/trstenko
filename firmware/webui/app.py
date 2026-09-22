@@ -14,12 +14,12 @@ import json
 from .api import UpdateApi
 
 
-def create_app(manager, device=None):
+def create_app(manager, device=None, auth=None):
     from flask import Flask, Response, request, send_from_directory
 
     from .server import STATIC
 
-    api = UpdateApi(manager, device)
+    api = UpdateApi(manager, device, auth)
     app = Flask(__name__, static_folder=None)
 
     @app.get("/")
@@ -33,7 +33,11 @@ def create_app(manager, device=None):
     @app.route("/api/<path:rest>", methods=["GET", "POST"])
     def api_route(rest):
         body = request.get_json(silent=True) if request.method == "POST" else {}
-        status, payload = api.dispatch(request.method, "/api/" + rest, body)
+        header = request.headers.get("Authorization", "")
+        token = (header[7:].strip() if header.lower().startswith("bearer ")
+                 else request.headers.get("X-Trstenko-Token", ""))
+        status, payload = api.dispatch(request.method, "/api/" + rest, body,
+                                       token)
         return Response(json.dumps(payload), status=status,
                         mimetype="application/json",
                         headers={"Cache-Control": "no-store"})

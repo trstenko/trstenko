@@ -19,7 +19,7 @@ import sys
 from .device import Device
 from .hal import open_hal
 from .updates import GitHubReleases, UpdateConfig, UpdateManager
-from .webui import UpdateApi, serve
+from .webui import Auth, UpdateApi, serve
 
 
 def build(hal, config=None, log=print):
@@ -46,6 +46,12 @@ def main(argv=None):
 
     device, updater = build(hal)
 
+    # The page is reachable by anyone on the same Wi-Fi, so it is locked. The
+    # PIN belongs on the device's own screen next to the setup QR code; until
+    # that screen exists, the journal is where to find it.
+    auth = Auth(updater.config.data_root, log=print)
+    print("pairing PIN: %s" % auth.pin)
+
     server = None
     if not args.no_web:
         # Flask on the device when it is installed; the standard library is
@@ -53,14 +59,15 @@ def main(argv=None):
         try:
             from .webui import create_app
 
-            app = create_app(updater, device)
+            app = create_app(updater, device, auth)
             import threading
 
             threading.Thread(
                 target=lambda: app.run(host="0.0.0.0", port=args.port),
                 daemon=True).start()
         except ImportError:
-            server = serve(UpdateApi(updater, device), port=args.port)
+            server = serve(UpdateApi(updater, device, auth),
+                           port=args.port)
 
     try:
         device.run()

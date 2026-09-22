@@ -23,7 +23,7 @@ from firmware import pipeline as pipe
 from firmware.device import Device
 from firmware.hal.base import VOL_DOWN, VOL_UP
 from firmware.updates import UpdateConfig, UpdateManager
-from firmware.webui import UpdateApi
+from firmware.webui import Auth, UpdateApi
 
 from . import audio as audio_mod
 from .fake_releases import FakeReleases
@@ -686,6 +686,70 @@ def scenario_hostile_bundle(report, root):
                  not os.path.exists(os.path.join(root, "escaped.txt")))
 
 
+def scenario_pairing(report, root):
+    """The page is reachable by anyone on the same Wi-Fi. Without a lock,
+    so is installing firmware on it."""
+    data = os.path.join(root, "pairing")
+    rig = Rig(data, version="0.4.0", size_mb=0.3, real_bundle=True)
+    clock = [1000.0]
+    auth = Auth(data, clock=lambda: clock[0])
+    api = UpdateApi(rig.updater, rig.device, auth)
+    rig.step(4.0)
+
+    report.check("the PIN is six digits and not a fixed one",
+                 len(auth.pin) == 6 and auth.pin.isdigit(), auth.pin)
+
+    status, body = api.dispatch("GET", "/api/update")
+    report.check("an unpaired caller is refused",
+                 status == 401 and body.get("needs_pin"), str(status))
+
+    status, body = api.dispatch("POST", "/api/update/check", {}, "made-up")
+    report.check("so is one waving an invented token", status == 401,
+                 str(status))
+
+    status, body = api.dispatch("POST", "/api/auth", {"pin": "000000"})
+    wrong_ok = status == 401 or (status == 429)
+    report.check("a wrong PIN gets nothing", wrong_ok and "token" not in body,
+                 str(status))
+
+    # Keep guessing. The device has to stop answering rather than let a
+    # script walk through a million combinations.
+    for _ in range(6):
+        api.dispatch("POST", "/api/auth", {"pin": "111111"})
+    status, body = api.dispatch("POST", "/api/auth", {"pin": auth.pin})
+    report.check("guessing locks it, even against the right PIN",
+                 status == 429 and body.get("retry_after", 0) > 0,
+                 str(status))
+
+    clock[0] += 3600.0
+    status, body = api.dispatch("POST", "/api/auth", {"pin": auth.pin})
+    token = body.get("token", "")
+    report.check("the right PIN pairs once the wait is over",
+                 status == 200 and len(token) == 64, str(status))
+
+    status, body = api.dispatch("GET", "/api/update", {}, token)
+    report.check("and the token opens the door", status == 200, str(status))
+
+    status, body = api.dispatch("GET", "/api/update", {}, token)
+    report.check("the status carries who made the device",
+                 body["product"]["serial"] and body["product"]["support_until"],
+                 str(body.get("product")))
+
+    clock[0] += 25 * 3600.0
+    status, body = api.dispatch("GET", "/api/update", {}, token)
+    report.check("a token does not last forever", status == 401, str(status))
+
+    # Handing the device on: the old pairing has to stop working.
+    clock[0] += 1
+    fresh, _ = auth.verify(auth.pin)
+    old_pin = auth.pin
+    auth.reset_pin()
+    report.check("resetting makes a new PIN", auth.pin != old_pin)
+    status, _ = api.dispatch("GET", "/api/update", {}, fresh)
+    report.check("and drops everyone paired with the old one",
+                 status == 401, str(status))
+
+
 def scenario_web_api(report, root):
     rig = Rig(os.path.join(root, "web"), version="0.4.0", size_mb=0.3,
               real_bundle=True)
@@ -892,6 +956,7 @@ def main(argv=None):
         ("an SD card with no room", scenario_no_room),
         ("offline, then a corrupt bundle", scenario_offline_and_corrupt),
         ("the update page's API", scenario_web_api),
+        ("pairing with the page", scenario_pairing),
         ("what reaches the panel", scenario_blit),
         ("pixels left behind", scenario_no_ghosts),
         ("audio in and out", scenario_audio),

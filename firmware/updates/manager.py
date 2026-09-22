@@ -525,6 +525,12 @@ def _save_state(path, data):
         temp = path + ".tmp"
         with open(temp, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=1)
+        # The data root also holds API keys and the pairing PIN. Nothing here
+        # needs to be readable by every account on the machine.
+        try:
+            os.chmod(temp, 0o600)
+        except OSError:
+            pass
         os.replace(temp, path)
     except OSError:
         # Losing the deferral is survivable; crashing the device over it is not.

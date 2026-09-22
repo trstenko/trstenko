@@ -7,14 +7,15 @@ device with a broken virtualenv still boots and still shows a face.
 """
 
 from .api import UpdateApi
+from .auth import Auth
 from .server import serve
 
-__all__ = ["UpdateApi", "serve", "create_app"]
+__all__ = ["UpdateApi", "Auth", "serve", "create_app"]
 
 
-def create_app(manager, device=None):
+def create_app(manager, device=None, auth=None):
     """Flask app for the device. Imported late: Flask is not a hard dependency
     of the firmware package."""
     from .app import create_app as _create
 
-    return _create(manager, device)
+    return _create(manager, device, auth)

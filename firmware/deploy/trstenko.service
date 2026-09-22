@@ -14,6 +14,28 @@ Environment=TRSTENKO_DATA=/var/lib/trstenko
 Restart=always
 RestartSec=3
 
+# Least privilege. The app draws a face, talks to a sound card and a screen,
+# and writes to two directories; it has no business anywhere else. EN 18031
+# asks for this and it costs nothing.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# The two it may write to: its own releases and its own data.
+ReadWritePaths=/opt/trstenko /var/lib/trstenko
+# SPI, GPIO and the USB sound card.
+DeviceAllow=char-spi rw
+DeviceAllow=char-gpiochip rw
+DeviceAllow=char-snd rw
+
 # Five failures in a minute is a release that does not work. Give up rather
 # than restart-looping: bootcheck counts those boots and rolls back, and a
 # tight loop only burns the SD card while it does.

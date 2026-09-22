@@ -1,10 +1,16 @@
 """The update endpoints, with no web framework in sight.
 
-`UpdateApi.dispatch` takes a method and a path and returns `(status, dict)`.
-Flask serves it on the device, the emulator serves it from the standard
-library, and a test calls it directly. Putting the logic in a framework would
-mean the emulator needed Flask installed to exercise an update flow.
+`UpdateApi.dispatch` takes a method, a path and the caller's token, and
+returns `(status, dict)`. Flask serves it on the device, the emulator serves
+it from the standard library, and a test calls it directly. Putting the logic
+in a framework would mean the emulator needed Flask installed to exercise an
+update flow.
 
+Everything except pairing needs a token. The page is served over the device's
+own Wi-Fi, so without that, anyone who can see the hotspot can install
+firmware on it -- see `auth.py`.
+
+    POST /api/auth              {"pin": "123456"} -> {"token": "..."}
     GET  /api/update            what the page renders
     POST /api/update/check      look now
     POST /api/update/approve    yes, install it
@@ -19,17 +25,30 @@ from firmware.updates import version as version_mod
 
 NOT_FOUND = (404, {"error": "no such endpoint"})
 BAD_METHOD = (405, {"error": "wrong method"})
+UNPAIRED = (401, {"error": "pair with the device first",
+                  "needs_pin": True})
 
 
 class UpdateApi:
-    def __init__(self, manager, device=None):
+    def __init__(self, manager, device=None, auth=None):
         self.manager = manager
         self.device = device
+        # No auth object means no lock. Only a test does that, and it has to
+        # say so explicitly rather than getting it by forgetting an argument.
+        self.auth = auth
 
-    def dispatch(self, method, path, body=None):
+    def dispatch(self, method, path, body=None, token=None):
         method = method.upper()
         path = "/" + path.strip("/")
         body = body if isinstance(body, dict) else {}
+
+        if path == "/api/auth":
+            if method != "POST":
+                return BAD_METHOD
+            return self._pair(body)
+
+        if self.auth is not None and not self.auth.check(token):
+            return UNPAIRED
 
         if path == "/api/update":
             if method != "GET":
@@ -54,9 +73,29 @@ class UpdateApi:
 
     # ---- handlers ----
 
+    def _pair(self, body):
+        """Swap the PIN shown on the device for a token.
+
+        The wait after a wrong PIN is reported rather than hidden: somebody
+        mistyping deserves to know why the next attempt is being ignored, and
+        somebody guessing learns nothing they could not measure anyway.
+        """
+        if self.auth is None:
+            return 200, {"token": "", "note": "this device is not locked"}
+        token, wait = self.auth.verify(body.get("pin"))
+        if token:
+            return 200, {"token": token}
+        if wait > 0:
+            return 429, {"error": "too many wrong PINs",
+                         "retry_after": round(wait, 1)}
+        return 401, {"error": "that is not the PIN on the device"}
+
     def status(self):
+        from firmware import product
+
         out = self.manager.status()
         out["version"] = str(version_mod.current())
+        out["product"] = product.identity(self.manager.config.data_root)
         if self.device is not None:
             out["device"] = self.device.summary()
         return out

@@ -127,6 +127,68 @@ def cmd_trust(args):
     return 0
 
 
+def sbom(version):
+    """What is inside a release, in CycloneDX.
+
+    The Cyber Resilience Act wants a software bill of materials for the top
+    level of a product's dependencies, and a vulnerability notice is
+    unanswerable without one: when something turns up in Pillow, the question
+    is which releases shipped which version of it, and that is a question a
+    file answers and a memory does not.
+
+    Read off `requirements.txt` rather than off the build machine's installed
+    set, because the bundle carries the requirements and not the machine.
+    """
+    from firmware import product
+
+    components = []
+    for line in _requirements():
+        name, _, pinned = line.partition(">=")
+        name = name.strip()
+        components.append({
+            "type": "library",
+            "name": name,
+            "version": pinned.strip() or "unpinned",
+            "purl": "pkg:pypi/%s%s" % (name.lower(),
+                                       "@" + pinned.strip() if pinned else ""),
+            "scope": "required",
+        })
+
+    return {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "version": 1,
+        "metadata": {
+            "timestamp": _now(),
+            "component": {
+                "type": "firmware",
+                "name": product.MODEL,
+                "version": str(version),
+                "publisher": product.MANUFACTURER,
+            },
+            "supplier": {"name": product.MANUFACTURER},
+        },
+        "components": components,
+    }
+
+
+def _requirements():
+    path = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(signing.__file__))), "requirements.txt")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return [line.strip() for line in fh
+                    if line.strip() and not line.startswith("#")]
+    except OSError:
+        return []
+
+
+def _now():
+    import datetime
+
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def cmd_build(args):
     _check_version_file(args.version, args.force)
     os.makedirs(args.out, exist_ok=True)
@@ -153,6 +215,10 @@ def cmd_build(args):
             seed = bytes.fromhex(json.load(fh)["private"])
         sign_manifest(manifest, seed)
 
+    bom_path = os.path.join(args.out, "sbom.json")
+    with open(bom_path, "w", encoding="utf-8") as fh:
+        json.dump(sbom(args.version), fh, indent=1)
+
     manifest_path = os.path.join(args.out, "update.json")
     with open(manifest_path, "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=1)
@@ -161,7 +227,9 @@ def cmd_build(args):
     print("%s  %s" % (manifest_path,
                       "signed by %s" % manifest["key_id"] if args.key
                       else "UNSIGNED — pass --key to sign it"))
-    print("\nAttach both to a GitHub release tagged v%s." % args.version)
+    print("%s  %d component(s)"
+          % (bom_path, len(sbom(args.version)["components"])))
+    print("\nAttach all three to a GitHub release tagged v%s." % args.version)
     return 0
 
 

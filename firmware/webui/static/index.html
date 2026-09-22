@@ -102,6 +102,20 @@ dl { margin: 0; }
 }
 
 .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+
+.pinrow { display: flex; gap: 10px; margin: 0 0 10px; }
+.pinrow input {
+  font-family: var(--mono);
+  font-size: 1.3rem;
+  letter-spacing: 0.35em;
+  width: 7.5em;
+  padding: 8px 12px;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+}
+.pinrow input:focus { outline: none; border-color: var(--teal); }
 button {
   font: inherit;
   font-size: 0.95rem;
@@ -139,6 +153,18 @@ footer {
   <h1>Trstenko <span id="installed">—</span></h1>
   <p class="lede" id="lede">Reading the device.</p>
 
+  <section id="pair" hidden>
+    <h2>Pair with this device</h2>
+    <p class="detail">Type the six digits shown on Trstenko's screen. They
+      are unique to this device and only need entering once per visit.</p>
+    <form id="pin-form" class="pinrow" autocomplete="off">
+      <input id="pin" inputmode="numeric" pattern="[0-9]*" maxlength="6"
+             aria-label="Pairing PIN" placeholder="000000">
+      <button class="go" type="submit">Pair</button>
+    </form>
+    <p class="detail" id="pin-error"></p>
+  </section>
+
   <section id="update">
     <h2>Software</h2>
     <div id="update-body"></div>
@@ -150,10 +176,16 @@ footer {
     <dl id="checks"></dl>
   </section>
 
-  <section>
+  <section id="device-section">
     <h2>Device</h2>
     <dl id="device"></dl>
     <div class="actions" id="revert"></div>
+  </section>
+
+  <section id="about-section">
+    <h2>This device</h2>
+    <dl id="about"></dl>
+    <p class="detail" id="ai-notice"></p>
   </section>
 
   <footer id="footer"></footer>
@@ -166,6 +198,59 @@ const esc = (s) => String(s ?? "").replace(/[<>&]/g, c => (
 
 let poll = 4000;
 let timer = null;
+
+// Session storage, not local: closing the tab un-pairs, which is the right
+// default for a page anyone on the same Wi-Fi can open.
+let token = sessionStorage.getItem("trstenko-token") || "";
+
+function headers() {
+  return token ? {"Authorization": "Bearer " + token} : {};
+}
+
+function needPin(show, message) {
+  $("pair").hidden = !show;
+  // Everything else is empty until there is a token, and an empty heading
+  // reads as a broken page rather than a locked one.
+  for (const id of ["update", "checks-section", "device-section",
+                    "about-section", "footer"]) {
+    if ($(id)) $(id).hidden = show;
+  }
+  $("pin-error").textContent = message || "";
+  if (show) {
+    clearTimeout(timer);
+    $("lede").textContent = "This device is locked.";
+    $("pin").focus();
+  }
+}
+
+async function pair(event) {
+  event.preventDefault();
+  const pin = $("pin").value.trim();
+  try {
+    const res = await fetch("/api/auth", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({pin: pin})
+    });
+    const payload = await res.json();
+    if (res.ok && payload.token !== undefined) {
+      token = payload.token;
+      sessionStorage.setItem("trstenko-token", token);
+      $("pin").value = "";
+      needPin(false);
+      refresh();
+      return;
+    }
+    if (res.status === 429) {
+      needPin(true, "Too many wrong PINs. Try again in "
+        + Math.ceil(payload.retry_after) + " seconds.");
+    } else {
+      needPin(true, payload.error || "That did not work.");
+    }
+  } catch (err) {
+    needPin(true, "Lost contact with the device.");
+  }
+}
 
 function mb(bytes) {
   if (!bytes) return "—";
@@ -199,9 +284,10 @@ async function post(path, btn) {
   try {
     const res = await fetch("/api/update/" + path, {
       method: "POST",
-      headers: {"Content-Type": "application/json"},
+      headers: Object.assign({"Content-Type": "application/json"}, headers()),
       body: "{}"
     });
+    if (res.status === 401) { token = ""; needPin(true); return; }
     const payload = await res.json();
     // A refusal answers with the state plus a reason. Keep the reason: the
     // poll that follows would otherwise wipe it within a second.
@@ -214,7 +300,13 @@ async function post(path, btn) {
 
 async function refresh() {
   try {
-    const res = await fetch("/api/update");
+    const res = await fetch("/api/update", {headers: headers()});
+    if (res.status === 401) {
+      token = "";
+      sessionStorage.removeItem("trstenko-token");
+      needPin(true);
+      return;
+    }
     render(await res.json());
   } catch (err) {
     $("lede").textContent = "Lost contact with the device.";
@@ -223,6 +315,7 @@ async function refresh() {
 
 function render(s) {
   if (!s || !s.state) return;
+  needPin(false);
   $("installed").textContent = s.version || s.installed || "";
 
   const rel = s.release;
@@ -407,6 +500,17 @@ function render(s) {
     revert.append(button("Go back to the previous release", "revert"));
   }
 
+  const p = s.product || {};
+  rows($("about"), [
+    ["model", p.model_id ? p.model + " (" + p.model_id + ")" : "—"],
+    ["serial", p.serial || "—"],
+    ["made by", p.manufacturer || "—"],
+    ["address", p.address || "—"],
+    ["security updates until", p.support_until || "—"],
+    ["report a problem", p.security_contact || "—"],
+  ]);
+  $("ai-notice").textContent = p.ai_notice || "";
+
   $("footer").textContent =
     "Connected to Trstenko over its own Wi-Fi. Nothing on this page leaves " +
     "the device. Updates replace the app, not the operating system — a " +
@@ -417,6 +521,7 @@ function render(s) {
   timer = setTimeout(refresh, poll);
 }
 
+$("pin-form").addEventListener("submit", pair);
 refresh();
 </script>
 </body>

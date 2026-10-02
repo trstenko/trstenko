@@ -347,7 +347,7 @@ def scenario_provider_replies(report, root):
         report.check("the table's parameters go in, and its drops stay out",
                      body["stream"] is True and body["max_tokens"] == 300
                      and body["reasoning_effort"] == "minimal"
-                     and "stream_options" not in body
+                     and body["stream_options"] == {"include_usage": True}
                      and body["tools"] == TOOLS
                      and body["model"] == "gemini-3.5-flash-lite", str(body))
 

@@ -8,8 +8,8 @@
     "default_model": "gemini-3.5-flash-lite",
     "models": ["gemini-3.5-flash-lite", "gemini-3.8-flash"],
     "params": {"reasoning_effort": "minimal", "max_tokens": 300},
-    "drop_params": ["parallel_tool_calls", "seed", "store", "stream_options"],
-    "stream_usage": "always_in_last_chunk",
+    "drop_params": ["parallel_tool_calls", "seed", "store"],
+    "stream_usage": "stream_options",
     "headers": {},
     "stt": null,
     "free_tier": {
@@ -19,7 +19,7 @@
     },
     "languages": ["en", "sl"],
     "key_help_url": "https://aistudio.google.com/apikey",
-    "verified": null
+    "verified": "2026-10-02"
   },
   "openai": {
     "label": "OpenAI",

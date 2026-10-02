@@ -14,3 +14,9 @@ sounddevice>=0.4
 # than localhost, so the dashboard serves itself over a self-signed cert
 # (Flask's `ssl_context="adhoc"`, which needs this package).
 cryptography>=42
+
+# The scheduler keeps reminders in the owner's timezone with zoneinfo. The robot
+# and CI have the system tz database; Windows has none, and Python there only
+# gets one from this package. Development only: the firmware does not install
+# it, and it is not in the release bill of materials.
+tzdata>=2024.1

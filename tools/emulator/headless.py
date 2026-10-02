@@ -13,6 +13,7 @@ This is the check to run after touching the updater or the device loop.
 """
 
 import io
+import json
 import logging
 import os
 import shutil
@@ -1555,6 +1556,463 @@ def scenario_logging(report, root):
                  repr(out.getvalue()))
 
 
+def _tables(conn):
+    return {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+
+def _migration_dir(root, name, files):
+    directory = os.path.join(root, name)
+    os.makedirs(directory, exist_ok=True)
+    for filename, sql in files.items():
+        with open(os.path.join(directory, filename), "w",
+                  encoding="utf-8") as fh:
+            fh.write(sql)
+    return directory
+
+
+def scenario_database(report, root):
+    import sqlite3
+
+    from firmware.storage import Database, log_event
+    from firmware.storage import migrate as migrate_mod
+
+    base = os.path.join(root, "db")
+    db = Database(os.path.join(base, "trstenko.db"))
+    conn = db.conn()
+
+    mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    report.check("the database is in WAL mode", mode == "wal", mode)
+    report.check("with synchronous=NORMAL",
+                 conn.execute("PRAGMA synchronous").fetchone()[0] == 1)
+    report.check("and a 2s busy timeout",
+                 conn.execute("PRAGMA busy_timeout").fetchone()[0] == 2000)
+
+    report.check("a thread gets the same connection every time",
+                 db.conn() is conn)
+    other = []
+    thread = threading.Thread(target=lambda: other.append(db.conn()))
+    thread.start()
+    thread.join()
+    report.check("and another thread gets its own",
+                 other and other[0] is not conn)
+
+    first = migrate_mod.migrate(db)
+    report.check("a new database is migrated from 0 to 1", first == (0, 1),
+                 str(first))
+    wanted = {"schema_version", "memories", "jobs", "usage", "usage_daily",
+              "turn_log", "events_log"}
+    report.check("with every table the plans name",
+                 wanted <= _tables(conn), str(wanted - _tables(conn)))
+    report.check("and no backup, because there was nothing to back up",
+                 not os.path.exists(os.path.join(base, "backups")))
+
+    second = migrate_mod.migrate(db)
+    report.check("migrating again does nothing", second == (1, 1),
+                 str(second))
+    rows = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
+    report.check("and keeps exactly one version row", rows == 1, str(rows))
+
+    conn.execute("INSERT INTO memories (text, created_at) VALUES "
+                 "('likes tea', 1.0)")
+    sql2 = ("-- adds a column and a table\n"
+            "ALTER TABLE memories ADD COLUMN mood TEXT DEFAULT 'calm';\n"
+            "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);\n")
+    v2 = _migration_dir(root, "mig2", {
+        "001_init.sql": open(os.path.join(migrate_mod.MIGRATIONS_DIR,
+                                          "001_init.sql"),
+                             encoding="utf-8").read(),
+        "002_notes.sql": sql2})
+    result = migrate_mod.migrate(db, migrations_dir=v2)
+    report.check("a new migration moves the version on", result == (1, 2),
+                 str(result))
+    backup = os.path.join(base, "backups", "trstenko-v1.db")
+    report.check("and a backup of the old database was made first",
+                 os.path.exists(backup))
+    copy = sqlite3.connect(backup)
+    held = copy.execute("SELECT text FROM memories").fetchall()
+    has_new = "notes" in {r[0] for r in copy.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    copy.close()
+    report.check("the backup holds the data as it was, without the new table",
+                 held == [("likes tea",)] and not has_new, str(held))
+
+    # The rollback. Release 0.5 only knows migration 001; the database has
+    # been taken to 2 by release 0.6.
+    old_release = migrate_mod.migrate(db)
+    report.check("a rolled-back release leaves a newer database alone",
+                 old_release == (2, 2), str(old_release))
+    conn.execute("INSERT INTO memories (text, created_at) VALUES "
+                 "('prefers mornings', 2.0)")
+    conn.execute("INSERT INTO jobs (kind, text, state, created_at, source) "
+                 "VALUES ('timer', 'pasta', 'pending', 3.0, 'voice')")
+    read = conn.execute("SELECT text FROM memories ORDER BY id").fetchall()
+    report.check("and the old code still reads and writes its tables",
+                 [r[0] for r in read] == ["likes tea", "prefers mornings"],
+                 str(read))
+    report.check("the new column has its default for rows the old code wrote",
+                 conn.execute("SELECT mood FROM memories WHERE id = 2")
+                 .fetchone()[0] == "calm")
+
+    # Backups keep the last three.
+    files = {"001_init.sql": open(os.path.join(migrate_mod.MIGRATIONS_DIR,
+                                               "001_init.sql"),
+                                  encoding="utf-8").read(),
+             "002_notes.sql": sql2}
+    for n in range(3, 7):
+        files["%03d_extra.sql" % n] = "CREATE TABLE extra%d (id INTEGER);\n" % n
+        directory = _migration_dir(root, "mig%d" % n, dict(files))
+        migrate_mod.migrate(db, migrations_dir=directory)
+    kept = sorted(os.listdir(os.path.join(base, "backups")))
+    report.check("only the last three backups are kept",
+                 kept == ["trstenko-v3.db", "trstenko-v4.db",
+                          "trstenko-v5.db"], str(kept))
+
+    # A migration that fails half way changes nothing.
+    broken = _migration_dir(root, "mig-broken", dict(files, **{
+        "007_half.sql": ("CREATE TABLE half_done (id INTEGER);\n"
+                         "CREATE TABLE half_done (id INTEGER);\n")}))
+    before = migrate_mod.current_version(conn)
+    try:
+        migrate_mod.migrate(db, migrations_dir=broken)
+        failed = False
+    except migrate_mod.MigrationError:
+        failed = True
+    report.check("a migration that fails is reported",
+                 failed)
+    report.check("and leaves neither its tables nor a new version",
+                 "half_done" not in _tables(conn)
+                 and migrate_mod.current_version(conn) == before)
+
+    # The events log keeps its last 500.
+    for n in range(520):
+        log_event(conn, "test", "event %d" % n, at=float(n))
+    count = conn.execute("SELECT COUNT(*) FROM events_log").fetchone()[0]
+    oldest = conn.execute("SELECT MIN(at) FROM events_log").fetchone()[0]
+    report.check("the events log is trimmed to the last 500",
+                 count == 500 and oldest == 20.0, "%d, %s" % (count, oldest))
+
+    db.close()
+    report.check("closing the database folds the WAL back in",
+                 not os.path.exists(db.path + "-wal")
+                 or os.path.getsize(db.path + "-wal") == 0)
+    try:
+        db.conn()
+        refused = False
+    except sqlite3.ProgrammingError:
+        refused = True
+    report.check("and a closed database refuses new connections", refused)
+
+    from tools import check_layout
+
+    report.check("the shipped migrations pass the layout check",
+                 check_layout.check_migrations() == [])
+    bad = _migration_dir(root, "bad-mig", {
+        "001_init.sql": "CREATE TABLE a (id INTEGER);\n",
+        "002_bad.sql": "-- DROP in a comment is fine\nDROP TABLE a;\n",
+        "003_rename.sql": "ALTER TABLE a RENAME TO b;\n"})
+    found = check_layout.check_migrations(bad)
+    report.check("a migration containing DROP or RENAME fails it",
+                 len(found) == 2 and "DROP" in found[0]
+                 and "RENAME" in found[1], str(found))
+    commented = _migration_dir(root, "ok-mig", {
+        "001_init.sql": "-- never DROP anything\n/* or RENAME */\n"
+                        "CREATE TABLE a (id INTEGER);\n"})
+    report.check("but the words in a comment do not",
+                 check_layout.check_migrations(commented) == [])
+    gap = _migration_dir(root, "gap-mig", {
+        "001_a.sql": "CREATE TABLE a (id INTEGER);\n",
+        "003_c.sql": "CREATE TABLE c (id INTEGER);\n"})
+    report.check("and a gap in the numbering fails it",
+                 len(check_layout.check_migrations(gap)) == 1)
+
+
+def scenario_settings_file(report, root):
+    from firmware.storage import atomic
+    from firmware.storage.settings import (DEFAULTS, Settings, SettingsError,
+                                           default_path)
+
+    data = os.path.join(root, "settings")
+    path = default_path(data)
+
+    fresh = Settings.load(path)
+    report.check("with no file, the defaults apply",
+                 fresh.data == DEFAULTS and not fresh.repaired)
+    report.check("and the plan's values are in them",
+                 fresh.get("voice", "volume") == 0.6
+                 and fresh.get("quiet", "from") == "22:00"
+                 and fresh.get("owner", "timezone") == "Europe/Ljubljana"
+                 and fresh.get("budget", "monthly_usd") == 5.0)
+
+    # What is already in the file: the updater's section, and a setting from a
+    # release newer than this one.
+    os.makedirs(data, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"updates": {"channel": "beta", "auto_check": False},
+                   "voice": {"volume": 0.3, "from_the_future": 7},
+                   "from_a_newer_release": {"x": 1}}, fh)
+    loaded = Settings.load(path)
+    report.check("a saved setting is read back",
+                 loaded.get("voice", "volume") == 0.3)
+
+    loaded.apply(loaded.validate({"quiet": {"enabled": False}}))
+    loaded.save()
+    config = UpdateConfig.load(path=path, data_root=data)
+    report.check("UpdateConfig.load still reads its section from the same file",
+                 config.channel == "beta" and config.auto_check is False,
+                 "%s %s" % (config.channel, config.auto_check))
+    with open(path, "r", encoding="utf-8") as fh:
+        written = json.load(fh)
+    report.check("what this release does not understand is kept on save",
+                 written.get("from_a_newer_release") == {"x": 1}
+                 and written["voice"].get("from_the_future") == 7)
+    report.check("and the change was written",
+                 written["quiet"]["enabled"] is False)
+
+    # A write that dies after the temp file is complete but before the rename.
+    settings = Settings.load(path)
+    settings.apply(settings.validate({"voice": {"volume": 0.9}}))
+    real_replace = os.replace
+
+    def killed(src, dst):
+        raise KeyboardInterrupt("power cut")
+
+    os.replace = killed
+    try:
+        try:
+            settings.save()
+        except KeyboardInterrupt:
+            pass
+    finally:
+        os.replace = real_replace
+    after = Settings.load(path)
+    report.check("a write killed before the rename leaves the old file whole",
+                 after.get("voice", "volume") == 0.3
+                 and after.get("quiet", "enabled") is False
+                 and not after.repaired)
+    report.check("the half-written copy is only ever the temp file",
+                 os.path.exists(path + ".tmp"))
+    settings.save()
+    report.check("and the next save simply replaces it",
+                 Settings.load(path).get("voice", "volume") == 0.9
+                 and not os.path.exists(path + ".tmp"))
+
+    # A write killed in the middle of the temp file.
+    with open(path + ".tmp", "w", encoding="utf-8") as fh:
+        fh.write('{"voice": {"volu')
+    report.check("a torn temp file is never read",
+                 Settings.load(path).get("voice", "volume") == 0.9)
+
+    # A main file that is itself damaged.
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write('{"voice": {"volu')
+    broken = Settings.load(path)
+    report.check("a damaged settings file gives defaults, not an exception",
+                 broken.data == DEFAULTS and broken.repaired)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"voice": {"volume": "loud"}, "quiet": {"from": "25:99"},
+                   "budget": {"max_tool_steps": 3}}, fh)
+    partly = Settings.load(path)
+    report.check("a bad value is dropped and the rest are kept",
+                 partly.get("voice", "volume") == 0.6
+                 and partly.get("quiet", "from") == "22:00"
+                 and partly.get("budget", "max_tool_steps") == 3
+                 and len(partly.repaired) == 2, str(partly.repaired))
+
+    # Validation: all the complaints at once, and nothing applied.
+    s = Settings.load(os.path.join(data, "other.json"))
+    bad = {"voice": {"volume": 2, "piper_voice": 5},
+           "quiet": {"from": "late"}, "nonsense": {"x": 1},
+           "owner": {"timezone": "Mars/Olympus_Mons"},
+           "budget": {"monthly_usd": -1, "max_tool_steps": 2.5}}
+    try:
+        s.validate(bad)
+        message = ""
+    except SettingsError as exc:
+        message = str(exc)
+    for needle in ("voice.volume", "voice.piper_voice", "quiet.from",
+                   "nonsense", "owner.timezone", "budget.monthly_usd",
+                   "budget.max_tool_steps"):
+        report.check("the refusal names %s" % needle, needle in message,
+                     message)
+    report.check("and nothing was applied", s.data == DEFAULTS)
+
+    for patch, why in (({}, "an empty patch"), ("volume", "not an object"),
+                       ({"voice": 3}, "a section that is not an object"),
+                       ({"updates": {"channel": "dev"}},
+                        "the updater's own section"),
+                       ({"voice": {"volume": True}}, "a bool for a number"),
+                       ({"voice": {"volume": float("nan")}}, "NaN")):
+        try:
+            s.validate(patch)
+            refused = False
+        except SettingsError:
+            refused = True
+        report.check("refused: %s" % why, refused)
+
+    clean = s.validate({"budget": {"daily_usd": None, "monthly_usd": 12},
+                        "voice": {"volume": 1}})
+    report.check("null is allowed where the plan allows it, and ints widen",
+                 clean["budget"] == {"daily_usd": None, "monthly_usd": 12.0}
+                 and clean["voice"]["volume"] == 1.0
+                 and isinstance(clean["voice"]["volume"], float))
+    changed = s.apply(clean)
+    report.check("apply says which settings really changed",
+                 sorted(changed) == ["budget.monthly_usd", "voice.volume"],
+                 str(changed))
+
+    atomic_path = os.path.join(data, "atomic.json")
+    atomic.write_json(atomic_path, {"a": 1})
+    with open(atomic_path, "r", encoding="utf-8") as fh:
+        report.check("the atomic writer writes what it was given",
+                     json.load(fh) == {"a": 1})
+
+
+def scenario_secrets(report, root):
+    from firmware.storage import redact
+    from firmware.storage.secrets import Secrets, SecretsError, default_path
+
+    path = default_path(os.path.join(root, "secrets"))
+    keys = Secrets.load(path)
+    report.check("with no file there are no keys",
+                 not keys.has_key("gemini") and keys.key("gemini") == "")
+
+    gemini = "AIzaSyFAKEFAKEFAKEFAKEFAKEFAKE12345x9Qk"
+    status = keys.set_key("gemini", "  " + gemini + "\n")
+    report.check("setting a key says it is set, and shows the last four",
+                 status["set"] and status["last4"] == "x9Qk", str(status))
+    report.check("and that answer does not contain the key",
+                 gemini not in json.dumps(status))
+    report.check("nor does the status the page reads",
+                 gemini not in json.dumps(keys.status()))
+    report.check("the key is used by the code that needs it",
+                 keys.key("gemini") == gemini)
+
+    if os.name == "posix":
+        import stat
+
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+        report.check("the secrets file is mode 0600", mode == 0o600,
+                     oct(mode))
+    else:
+        report.check("the secrets file is mode 0600 (SKIPPED: this OS has no "
+                     "unix modes; CI on Linux runs it)", True)
+
+    again = Secrets.load(path)
+    report.check("keys survive a restart", again.key("gemini") == gemini)
+
+    for provider, key, why in (("gemini", "short", "too short"),
+                               ("gemini", "has a space in it 12345", "spaces"),
+                               ("gemini", "x" * 600, "too long"),
+                               ("nobody", "sk-" + "a" * 30, "unknown provider"),
+                               ("gemini", 12345678, "not text")):
+        try:
+            again.set_key(provider, key)
+            message = None
+        except SecretsError as exc:
+            message = str(exc)
+        report.check("a key that is %s is refused" % why, message is not None)
+        report.check("and the refusal does not quote it",
+                     message is None or str(key) not in message)
+    report.check("a refused key leaves the old one in place",
+                 again.key("gemini") == gemini)
+
+    again.set_key("gemini", "")
+    report.check("an empty key removes it",
+                 not again.has_key("gemini")
+                 and Secrets.load(path).key("gemini") == "")
+
+    plain = "plainly-not-shaped-like-anything-7f3a9c"
+    again.set_key("groq", plain)
+    report.check("a key with no recognisable shape is blanked by value",
+                 plain not in redact.redact("header was %s today" % plain))
+    again.clear()
+    report.check("a factory reset deletes the file and forgets the keys",
+                 not os.path.exists(path) and not again.has_key("groq")
+                 and plain in redact.redact(plain))
+
+    shaped = {"openai": "sk-proj-" + "A1b2C3d4" * 4,
+              "xai": "xai-" + "Q9w8E7r6" * 3,
+              "groq": "gsk_" + "Zx1Cv2Bn" * 3}
+    seen = {k: redact.redact("key=%s end" % v) for k, v in shaped.items()}
+    report.check("keys shaped like OpenAI, xAI and Groq ones are blanked",
+                 all(v == "key=%s end" % redact.MASK for v in seen.values()),
+                 str(seen))
+    report.check("ordinary text is left alone",
+                 redact.redact("sk-learn and gsk_ are fine") ==
+                 "sk-learn and gsk_ are fine")
+
+
+def scenario_no_key_in_output(report, root):
+    """Put a key everywhere a careless line could carry it, and look for it."""
+    import io
+
+    from firmware.storage import Database, log_event
+    from firmware.storage import migrate as migrate_mod
+    from firmware.storage.secrets import Secrets, default_path
+    from firmware.storage.settings import Settings
+
+    key = "AIzaSyNOTAREALKEYNOTAREALKEY0000000abcd"
+    odd = "unshaped-secret-0011223344556677"
+    keys = Secrets.load(default_path(os.path.join(root, "leak")))
+    keys.set_key("gemini", key)
+    keys.set_key("groq", odd)
+
+    stream = io.StringIO()
+    callback = []
+    logs.setup(stream=stream, callback=callback.append)
+    try:
+        logger = logging.getLogger("trstenko.provider")
+        logger.info("request with Authorization: Bearer %s", key)
+        logger.warning("groq said no to %s", odd)
+        try:
+            raise RuntimeError("connection failed for key %s" % key)
+        except RuntimeError:
+            logger.exception("request failed")
+        logger.info("a dict: %r", {"key": key, "other": odd})
+
+        quiet = Clocked()
+        quiet.device.on_log = callback.append
+        quiet.device._has_callback = True
+        quiet.device.log("using %s" % key)
+        quiet.device.log("using %s" % odd)
+    finally:
+        logs.teardown()
+
+    where = {"stdout": stream.getvalue(), "callback": "\n".join(callback)}
+    for name, text in where.items():
+        report.check("the key is nowhere in the %s output" % name,
+                     key not in text and odd not in text, text[:120])
+    report.check("but the lines are still there",
+                 "Authorization: Bearer" in where["stdout"]
+                 and "request failed" in where["stdout"])
+    report.check("including the traceback",
+                 "RuntimeError" in where["stdout"])
+
+    db = Database(os.path.join(root, "leak", "trstenko.db"))
+    migrate_mod.migrate(db)
+    log_event(db.conn(), "provider", "401 for key %s" % key)
+    row = db.conn().execute("SELECT detail FROM events_log").fetchone()[0]
+    report.check("an events_log row is redacted before it is stored",
+                 key not in row and redact_mask() in row, row)
+    db.close()
+
+    settings = Settings.load(os.path.join(root, "leak", "settings.json"))
+    settings.save()
+    with open(os.path.join(root, "leak", "settings.json"), "r",
+              encoding="utf-8") as fh:
+        text = fh.read()
+    report.check("the settings file and what the page reads hold no keys",
+                 key not in text and odd not in text
+                 and key not in json.dumps(settings.public()))
+
+
+def redact_mask():
+    from firmware.storage import redact
+
+    return redact.MASK
+
+
 def main(argv=None):
     root = tempfile.mkdtemp(prefix="trstenko-headless-")
     report = Report()
@@ -1568,6 +2026,10 @@ def main(argv=None):
         ("restarting a dead worker", scenario_worker_restarts),
         ("telling systemd, and shutting down", scenario_notify),
         ("logging", scenario_logging),
+        ("the database and its migrations", scenario_database),
+        ("the settings file", scenario_settings_file),
+        ("API keys", scenario_secrets),
+        ("a key never reaches the output", scenario_no_key_in_output),
         ("boot and a full turn", scenario_boot_and_talk),
         ("the mute switch", scenario_mute),
         ("a turn that fails", scenario_failed_turn),

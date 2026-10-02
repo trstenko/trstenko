@@ -15,9 +15,13 @@ much of it as exists so far:
 
 1. Logging. Before anything that can fail, so the failure is in the journal.
 2. Open the hardware. Without it there is nothing to do.
-3. Build the device; `face_boot` starts drawing on the first tick.
-4. Start the web server, which never blocks the loop.
-5. Tell systemd `READY=1`, then run.
+3. Settings and secrets, then the database and its migrations. A migration
+   that fails is not caught here: the transaction has rolled back, the old
+   schema is intact, and a release that cannot start is exactly what the
+   update system's rollback is for.
+4. Build the device; `face_boot` starts drawing on the first tick.
+5. Start the web server, which never blocks the loop.
+6. Tell systemd `READY=1`, then run.
 
 The voice pipeline is not wired in yet (Phase 2). The device runs without one:
 it boots, shows a face, respects the mute switch and the buttons, and serves
@@ -34,6 +38,7 @@ stop from systemd killed the process mid-write.
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import threading
@@ -41,6 +46,10 @@ import threading
 from . import events, logs, sdnotify
 from .device import Device
 from .hal import open_hal
+from .storage import DB_NAME, Database
+from .storage import migrate as migrate_mod
+from .storage import secrets as secrets_mod
+from .storage import settings as settings_mod
 from .updates import GitHubReleases, UpdateConfig, UpdateManager
 from .webui import Auth, UpdateApi, serve
 
@@ -57,7 +66,16 @@ def build(hal, config=None, notifier=None, on_log=None):
     updater = UpdateManager(
         config, source, hal.system,
         on_event=lambda kind, payload: log.info("update: %s", kind))
-    device = Device(hal, pipeline=None, updater=updater, on_log=on_log)
+    settings = settings_mod.Settings.load(
+        settings_mod.default_path(config.data_root))
+    secrets = secrets_mod.Secrets.load(
+        secrets_mod.default_path(config.data_root))
+    db = Database(os.path.join(config.data_root, DB_NAME))
+    migrate_mod.migrate(db)
+
+    device = Device(hal, pipeline=None, updater=updater, on_log=on_log,
+                    db=db, settings=settings, secrets=secrets)
+    device.add_closer("storage", db.close)
     if notifier is not None:
         # A step of the main loop, so a stalled loop stops pinging.
         device.add_step("watchdog", lambda now: notifier.watchdog(),

@@ -13,6 +13,7 @@ Run it before a release. It reads the source; it does not import anything.
 
 import ast
 import os
+import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -74,6 +75,47 @@ def _imports(path):
     return sorted((name, line) for name, line in top if line not in guarded)
 
 
+MIGRATIONS = os.path.join(FIRMWARE, "storage", "migrations")
+
+_DESTRUCTIVE = re.compile(r"\b(DROP|RENAME)\b", re.IGNORECASE)
+
+
+def check_migrations(directory=MIGRATIONS):
+    """Migrations only add. A release that is rolled back has to open a
+    database a newer release already migrated (plan 06), and that stops being
+    true the day a migration drops or renames something. Also numbered without
+    gaps, so a missing file is noticed here rather than as a device that skips
+    a step."""
+    problems = []
+    if not os.path.isdir(directory):
+        return problems
+    versions = []
+    for name in sorted(os.listdir(directory)):
+        if not name.endswith(".sql"):
+            continue
+        match = re.match(r"^(\d+)_", name)
+        if not match:
+            problems.append("firmware/storage/migrations/%s is not numbered "
+                            "like 001_name.sql" % name)
+            continue
+        versions.append(int(match.group(1)))
+        with open(os.path.join(directory, name), "r", encoding="utf-8") as fh:
+            text = fh.read()
+        # Words in comments are not statements.
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+        text = "\n".join(line.split("--", 1)[0] for line in text.splitlines())
+        found = _DESTRUCTIVE.search(text)
+        if found:
+            problems.append(
+                "firmware/storage/migrations/%s contains %s; migrations only "
+                "add, or a rolled-back release cannot open the database"
+                % (name, found.group(1).upper()))
+    if versions != list(range(1, len(versions) + 1)):
+        problems.append("firmware/storage/migrations is not numbered 1, 2, 3 "
+                        "without gaps: %s" % versions)
+    return problems
+
+
 def check():
     problems = []
 
@@ -105,6 +147,8 @@ def check():
                 problems.append(
                     "%s reads a path inside docs/, which is not installed on "
                     "the robot" % rel)
+
+    problems += check_migrations()
 
     baked = os.path.join(FIRMWARE, "face", "data", "faces.json")
     if not os.path.exists(baked):

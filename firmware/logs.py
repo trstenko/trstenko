@@ -24,6 +24,10 @@ import sys
 ROOT = "trstenko"
 FORMAT = "%(levelname)s %(name)s: %(message)s"
 
+# Without a handler, the standard library prints warnings to stderr as a last
+# resort, bare. A library that logs should not do that behind the caller's back.
+logging.getLogger(ROOT).addHandler(logging.NullHandler())
+
 
 class CallbackHandler(logging.Handler):
     def __init__(self, callback):
@@ -45,12 +49,17 @@ class CallbackHandler(logging.Handler):
             self.handleError(record)
 
 
-def setup(stream=None, level=None, callback=None, filters=()):
+def setup(stream=None, level=None, callback=None, filters=None):
     """Install the handlers, replacing any this module installed before, so a
     process that restarts its device in place does not log everything twice.
-    `stream=False` means no stdout handler."""
+    `stream=False` means no stdout handler. Every handler gets the filter that
+    blanks API keys unless `filters` says otherwise."""
     logger = logging.getLogger(ROOT)
     teardown()
+    if filters is None:
+        from .storage.redact import RedactFilter
+
+        filters = (RedactFilter(),)
 
     if level is None:
         level = logging.DEBUG if os.environ.get(

@@ -30,6 +30,7 @@ from .face import states as state_defs
 from .face.controller import FaceController
 from .face.renderer import FaceRenderer
 from .hal import ButtonDecoder, LONG, POWER, SETUP_COMBO, SHORT, VOL_DOWN, VOL_UP
+from .storage.redact import redact
 from .supervisor import Supervisor
 
 log = logging.getLogger("trstenko.device")
@@ -57,7 +58,8 @@ ERROR_HOLD = 4.0
 class Device:
     def __init__(self, hal, pipeline=None, updater=None, ssaa=2,
                  on_setup=None, on_log=None, mono=None, wall=None,
-                 events=None, screen_sleep_after=None):
+                 events=None, screen_sleep_after=None, db=None,
+                 settings=None, secrets=None):
         self.hal = hal
         # Two clocks, handed in so a test can drive them. `mono` is what
         # animation, timers and timeouts run on; `wall` is what a reminder
@@ -67,6 +69,13 @@ class Device:
         # already replaces, so nothing that exists today changes behaviour.
         self.mono = mono or (lambda: self.hal.now())
         self.wall = wall or time.time
+
+        # Storage, opened by main before the face appears (plan 01, step 2).
+        # A device built without them -- the emulator's rigs -- simply has
+        # nothing to remember.
+        self.db = db
+        self.settings = settings
+        self.secrets = secrets
 
         # The one inbox. Services are handed this to post to.
         self.events = events or ev.EventQueue()
@@ -426,6 +435,7 @@ class Device:
         # Both places: the callback is what the emulator window shows, and the
         # logger is what the journal gets. `via_callback` stops a handler that
         # feeds the same callback from showing the line twice.
+        line = redact(line)
         if self._has_callback:
             self.on_log(line)
         log.info("%s", line, extra={"via_callback": self._has_callback})

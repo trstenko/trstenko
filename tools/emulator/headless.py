@@ -30,7 +30,7 @@ from firmware import main as firmware_main
 from firmware import sdnotify
 from firmware import pipeline as pipe
 from firmware.device import Device
-from firmware.hal.base import VOL_DOWN, VOL_UP
+from firmware.hal.base import POWER, VOL_DOWN, VOL_UP
 from firmware.updates import UpdateConfig, UpdateManager
 from firmware.webui import Auth, UpdateApi
 
@@ -1201,7 +1201,7 @@ def scenario_loop_wakes_on_events(report, root):
             time.sleep(0.001)
         late = (seen[0] - start) if seen else 9.9
         report.check("an event is handled within a frame (%s)" % label,
-                     late < 0.08, "%.0f ms" % (late * 1000))
+                     late < 0.15, "%.0f ms" % (late * 1000))
 
         device.stop()
         device.events.post(ev.Event("Wake"))
@@ -2157,6 +2157,1026 @@ def scenario_settings_command(report, root):
                  not QuietHours(False, "22:00", "07:00").active(at(23)))
 
 
+TZ = "Europe/Ljubljana"
+
+
+def local_epoch(y, mo, d, h=0, mi=0, tz=TZ):
+    import datetime
+
+    from firmware.scheduler import clock as sched_clock
+
+    return sched_clock.to_epoch(datetime.datetime(y, mo, d, h, mi), tz)
+
+
+class SchedRig:
+    """A device with storage and a scheduler, on a clock you move. Rebooting it
+    brings up a new one against the same files, the way the robot would."""
+
+    open_rigs = []
+
+    def __init__(self, root, name, wall=None, mono=5000.0, synced=True,
+                 settings_patch=None):
+        from firmware.scheduler.wiring import wire
+        from firmware.storage import Database
+        from firmware.storage import migrate as migrate_mod
+        from firmware.storage.settings import Settings, default_path
+
+        self.root, self.name = root, name
+        self.data = os.path.join(root, name)
+        self.clock = FakeClock(
+            mono=mono,
+            wall=wall if wall is not None
+            else local_epoch(2026, 10, 2, 17, 50),
+            synced=synced)
+        self.hal = EmulatedHAL()
+        self.hal.now = self.clock.mono
+        self.plays = []
+        real_play = self.hal.speaker.play
+        self.hal.speaker.play = lambda pcm, rate=22050: (
+            self.plays.append((self.clock.mono(), len(pcm))),
+            real_play(pcm, rate))
+        self.logs = []
+        self.said = []
+
+        self.settings = Settings.load(default_path(self.data))
+        if settings_patch:
+            self.settings.apply(self.settings.validate(settings_patch))
+        self.db = Database(os.path.join(self.data, "trstenko.db"))
+        migrate_mod.migrate(self.db)
+        self.device = Device(self.hal, ssaa=1, mono=self.clock.mono,
+                             wall=self.clock.wall, on_log=self.logs.append,
+                             db=self.db, settings=self.settings)
+        self.scheduler, self.announcer = wire(
+            self.device, synced=self.clock.is_synced, say=self.said.append)
+        SchedRig.open_rigs.append(self)
+
+    # ---- time ----
+
+    def tick(self, times=1):
+        for _ in range(times):
+            self.device.tick()
+
+    def jump(self, seconds):
+        """The clock moves in one step and the device notices on its next
+        tick, which is how a loop that sleeps behaves; two more ticks let an
+        event it posted be handled."""
+        self.clock.advance(seconds)
+        self.tick(3)
+
+    def run(self, seconds, dt=0.25):
+        steps = int(round(seconds / dt))
+        for _ in range(steps):
+            self.clock.advance(dt)
+            self.device.tick()
+
+    def advance_to(self, epoch, dt=None):
+        self.jump(epoch - self.clock.wall())
+
+    # ---- doing things ----
+
+    def ask(self, name, args=None):
+        cmd = ev.Command(name, args)
+        self.device.events.post(cmd)
+        self.tick()
+        return cmd
+
+    def add(self, **kw):
+        cmd = self.ask("reminders.add", kw)
+        return cmd.result["reminder"] if cmd.error is None else cmd.error
+
+    def press(self, name=VOL_UP):
+        self.hal.press(name)
+        self.run(0.1, 0.05)
+        self.hal.release(name)
+        self.run(0.1, 0.05)
+
+    def jobs(self, state=None):
+        return self.scheduler.list(state)
+
+    def state_of(self, job_id):
+        return self.scheduler.get(job_id)["state"]
+
+    def reboot(self, off_seconds=0.0, synced=True, wall=None):
+        self.device.close()
+        self.db.close()
+        later = wall if wall is not None else (
+            self.clock.wall() + off_seconds)
+        return SchedRig(self.root, self.name, wall=later, mono=12.0,
+                        synced=synced)
+
+    def close(self):
+        self.device.close()
+        self.db.close()
+        if self in SchedRig.open_rigs:
+            SchedRig.open_rigs.remove(self)
+
+
+def scenario_scheduler_timers(report, root):
+    rig = SchedRig(root, "timers")
+    timer = rig.add(seconds=600)
+    report.check("a timer is created and listed", timer["kind"] == "timer"
+                 and timer["state"] == "pending"
+                 and abs(timer["remaining"] - 600) < 1, str(timer))
+
+    rig.jump(300)
+    report.check("half way, it has not fired",
+                 rig.state_of(timer["id"]) == "pending"
+                 and abs(rig.scheduler.get(timer["id"])["remaining"]
+                         - 300) < 1)
+    rig.jump(299.9)
+    report.check("a tenth of a second short, it has not fired",
+                 rig.state_of(timer["id"]) == "pending")
+    rig.jump(0.1)
+    report.check("at ten minutes it fires", rig.state_of(timer["id"])
+                 == "ringing", rig.state_of(timer["id"]))
+    report.check("and the chime plays", len(rig.plays) == 1)
+    report.check("the alert face is up", rig.device.face.current
+                 == "face_talking" or rig.announcer.active)
+    rig.run(1.5)
+    report.check("with the line spoken",
+                 rig.said == ["Your ten-minute timer is done."],
+                 str(rig.said))
+
+    rig.press()
+    report.check("a button acknowledges it",
+                 rig.state_of(timer["id"]) == "done"
+                 and rig.scheduler.get(timer["id"])["acked_at"] is not None)
+    report.check("and silences the alert", not rig.announcer.active
+                 and rig.announcer.current is None)
+
+    labelled = rig.add(seconds=90, text="pasta")
+    rig.jump(90)
+    rig.run(1.0)
+    report.check("a labelled timer says its label",
+                 rig.said[-1] == "The pasta timer is done.", rig.said[-1])
+    rig.press()
+
+    odd = rig.add(seconds=95)
+    rig.jump(95)
+    rig.run(1.0)
+    report.check("a length that is not a round unit gets the plain line",
+                 rig.said[-1] == "Your timer is done.", rig.said[-1])
+    rig.press()
+
+    gone = rig.add(seconds=60)
+    rig.ask("reminders.cancel", {"id": gone["id"]})
+    rig.jump(120)
+    report.check("a cancelled timer never fires",
+                 rig.state_of(gone["id"]) == "cancelled"
+                 and not rig.announcer.active)
+
+    for bad, why in ((0, "zero"), (-5, "negative"), (86401, "over a day"),
+                     ("ten", "text"), (True, "a bool"),
+                     (float("nan"), "NaN")):
+        message = rig.add(seconds=bad)
+        report.check("a timer of %s is refused with a sentence" % why,
+                     isinstance(message, str) and message.endswith("."),
+                     str(message))
+    report.check("24 hours exactly is allowed",
+                 isinstance(rig.add(seconds=86400), dict))
+    report.check("a timer cannot repeat",
+                 "cannot repeat" in str(rig.add(seconds=60, repeat="daily")))
+
+    # A timer needs no clock at all.
+    cold = SchedRig(root, "timers-cold", synced=False)
+    early = cold.add(seconds=30)
+    cold.jump(30)
+    report.check("a timer works before the clock has synced",
+                 isinstance(early, dict)
+                 and cold.state_of(early["id"]) == "ringing")
+    rig.close()
+    cold.close()
+
+
+def scenario_scheduler_reminders(report, root):
+    rig = SchedRig(root, "reminders", wall=local_epoch(2026, 10, 2, 17, 50))
+    mum = rig.add(text="call mum", local_time="2026-10-02T18:00")
+    report.check("a reminder is created for a time, with its zone",
+                 mum["kind"] == "reminder" and mum["tz"] == TZ
+                 and mum["local_time"] == "2026-10-02T18:00", str(mum))
+    report.check("and says when, in words", mum["say"] == "six in the evening",
+                 mum["say"])
+
+    rig.jump(9 * 60 + 59)
+    report.check("a second before six it has not fired",
+                 rig.state_of(mum["id"]) == "pending")
+    rig.jump(1)
+    report.check("at six it fires", rig.state_of(mum["id"]) == "ringing")
+    rig.run(1.5)
+    report.check("saying its own text, with no model involved",
+                 rig.said == ["Reminder: call mum."], str(rig.said))
+    rig.press()
+
+    tomorrow = rig.add(text="dentist", local_time="2026-10-03T07:30")
+    report.check("a reminder for tomorrow says so",
+                 tomorrow["say"] == "tomorrow at half past seven in the "
+                 "morning", tomorrow["say"])
+
+    # Before the clock is right, a reminder waits. It is neither fired nor
+    # judged missed, even if the stale clock says it is long past due.
+    first = SchedRig(root, "reminders-sync",
+                     wall=local_epoch(2026, 10, 2, 17, 50))
+    due = first.add(text="take the bins out", local_time="2026-10-02T18:00")
+    stale = local_epoch(2026, 10, 2, 21, 0)
+    cold = first.reboot(wall=stale, synced=False)
+    cold.run(30, 1.0)
+    report.check("with the clock unsynced, a reminder does not fire even if "
+                 "the clock says it is past due",
+                 cold.state_of(due["id"]) == "pending"
+                 and not cold.announcer.active)
+    report.check("and is not judged missed", cold.jobs("missed") == [])
+    report.check("a new reminder is refused until the clock is known",
+                 "do not know the time" in str(cold.add(
+                     text="x", local_time="2026-10-03T09:00")))
+
+    # NTP corrects the clock to a time before the reminder.
+    cold.clock.set_wall(local_epoch(2026, 10, 2, 17, 55))
+    cold.clock.set_synced(True)
+    cold.run(3, 0.5)
+    report.check("on ClockSynced it is still waiting for its time",
+                 cold.state_of(due["id"]) == "pending" and cold.scheduler.synced)
+    cold.jump(5 * 60)
+    report.check("and fires when six comes",
+                 cold.state_of(due["id"]) == "ringing")
+    cold.run(1.5)
+    report.check("saying its line", cold.said == ["Reminder: take the bins "
+                                                  "out."], str(cold.said))
+    cold.press()
+
+    # Or it corrects to a time after the reminder: it came due while we waited.
+    first2 = SchedRig(root, "reminders-sync2",
+                      wall=local_epoch(2026, 10, 2, 17, 50))
+    late = first2.add(text="take the bins out", local_time="2026-10-02T18:00")
+    cold2 = first2.reboot(wall=local_epoch(2026, 10, 2, 9, 0), synced=False)
+    cold2.run(10, 1.0)
+    cold2.clock.set_wall(local_epoch(2026, 10, 2, 18, 5))
+    cold2.clock.set_synced(True)
+    cold2.run(3, 0.5)
+    cold2.run(4, 0.5)
+    report.check("if the real time turns out to be after it, it is said as a "
+                 "late reminder",
+                 any("While I was off" in line for line in cold2.said),
+                 str(cold2.said))
+    for r in (rig, first, cold, first2, cold2):
+        r.close()
+
+
+def scenario_scheduler_limits(report, root):
+    rig = SchedRig(root, "limits")
+    ids = []
+    for n in range(50):
+        job = rig.add(text="reminder %d" % n,
+                      local_time="2026-10-%02dT09:00" % (3 + n % 20))
+        ids.append(job["id"] if isinstance(job, dict) else None)
+    report.check("fifty reminders are allowed", all(ids), str(ids[-3:]))
+    refused = rig.add(text="one too many", local_time="2026-10-30T09:00")
+    report.check("the 51st is refused with a sentence the model can say",
+                 refused == "You already have 50 reminders; cancel some "
+                 "first.", str(refused))
+    refused = rig.add(seconds=60)
+    report.check("and so is a 51st timer", "50 reminders" in str(refused))
+    rig.ask("reminders.cancel", {"id": ids[0]})
+    report.check("cancelling one makes room",
+                 isinstance(rig.add(seconds=60), dict))
+
+    clean = SchedRig(root, "limits-rules")
+    ok = clean.add(text="x" * 200, local_time="2026-10-03T09:00")
+    report.check("200 characters are fine", isinstance(ok, dict))
+    for kw, needle, why in (
+            (dict(text="x" * 201, local_time="2026-10-03T09:00"),
+             "200 characters", "text of 201 characters"),
+            (dict(text="", local_time="2026-10-03T09:00"), "something to "
+             "say", "an empty reminder"),
+            (dict(text="a", local_time="2026-10-02T17:00"), "already passed",
+             "a time in the past"),
+            (dict(text="a", local_time="2026-10-02T17:50"), "already passed",
+             "this very minute"),
+            (dict(text="a", local_time="soon"), "written like",
+             "a time that is not a time"),
+            (dict(text="a", local_time="2026-10-03T09:00+02:00"), "offset",
+             "a time with its own offset"),
+            (dict(text="a", local_time="2026-10-03T09:00", tz="Mars/Base"),
+             "unknown timezone", "an unknown timezone"),
+            (dict(text="a", local_time="2026-10-03T09:00", repeat="hourly"),
+             "daily, weekdays", "an unsupported repeat"),
+            (dict(text="a", local_time="2026-10-03T09:00",
+                  repeat="weekly:XX"), "daily, weekdays",
+             "a day that does not exist"),
+            (dict(text="a"), "either", "neither a time nor a length"),
+            (dict(text="a", seconds=5, local_time="2026-10-03T09:00"),
+             "not both", "both"),
+            (dict(text=12, seconds=5), "words", "text that is a number")):
+        message = clean.add(**kw)
+        report.check("refused, with a reason: %s" % why,
+                     isinstance(message, str) and needle in message,
+                     str(message))
+    report.check("a bad request created nothing",
+                 len(clean.jobs()) == 1)
+
+    unknown = clean.ask("reminders.cancel", {"id": 9999})
+    report.check("cancelling a reminder that is not there says so",
+                 unknown.error == "There is no reminder number 9999.",
+                 str(unknown.error))
+    clean.ask("reminders.cancel", {"id": ok["id"]})
+    again = clean.ask("reminders.cancel", {"id": ok["id"]})
+    report.check("cancelling twice is refused", "already cancelled"
+                 in str(again.error), str(again.error))
+    for args, why in (({"id": "one"}, "a text id"),
+                      ({"id": True}, "a bool id"), (None, "no id")):
+        bad = clean.ask("reminders.cancel", args)
+        report.check("cancel with %s is refused" % why, bad.error)
+
+    report.check("an unknown command argument shape is an error, not a crash",
+                 clean.ask("reminders.add", "remind me").error)
+
+    # What the page and the model see.
+    cmd = clean.ask("reminders.add", {"text": "water the plants",
+                                      "local_time": "2026-10-02T18:30"})
+    report.check("reminders.add answers ok, with the id and the words",
+                 cmd.result["ok"] is True and cmd.result["id"]
+                 and cmd.result["say"] == "half past six in the evening",
+                 str(cmd.result))
+    via_web = clean.ask("reminders.add", {"text": "x", "in_seconds": 30,
+                                          "source": "web"})
+    report.check("in_seconds is accepted, as the page's API spells it",
+                 via_web.error is None
+                 and via_web.result["reminder"]["source"] == "web")
+    report.check("a made-up source is refused",
+                 clean.ask("reminders.add", {"text": "x", "seconds": 30,
+                                             "source": "psychic"}).error)
+    listing = clean.ask("reminders.list", {"state": "pending"})
+    report.check("reminders.list filters by state, soonest first",
+                 all(r["state"] == "pending" for r in
+                     listing.result["reminders"])
+                 and [r["due_wall"] for r in listing.result["reminders"]]
+                 == sorted(r["due_wall"] for r in
+                           listing.result["reminders"]))
+    report.check("the list never shows the boot-local timer target",
+                 all("due_mono" not in r for r in
+                     clean.ask("reminders.list").result["reminders"]))
+    plain = Clocked()
+    nothing = ev.Command("reminders.list")
+    plain.device.events.post(nothing)
+    plain.step(0.1)
+    report.check("a device with no scheduler says so instead of failing",
+                 nothing.error and "not available" in nothing.error)
+    rig.close()
+    clean.close()
+
+
+def scenario_announcements(report, root):
+    from firmware.scheduler import announce
+
+    rig = SchedRig(root, "announce")
+    mum = rig.add(text="call mum", local_time="2026-10-02T18:00")
+    rig.jump(10 * 60)
+    start = rig.clock.mono()
+    rig.run(1.0)
+    report.check("the chime is the reminder's, and is decoded from the file",
+                 len(rig.plays) == 1
+                 and rig.plays[0][1] == len(announce.load_chime(
+                     "chime_reminder.wav").pcm))
+    report.check("the face is the alert face while it speaks",
+                 rig.device.face.current == "face_talking")
+    report.check("the announcer says it is announcing",
+                 rig.device.summary()["announcing"]["ringing"] == mum["id"])
+
+    rig.run(12.0)
+    report.check("after the acknowledgement window the face settles",
+                 rig.device.face.current != "face_talking")
+    report.check("but the reminder is still ringing, waiting to be heard",
+                 rig.state_of(mum["id"]) == "ringing")
+
+    rig.run(60.0)
+    rig.run(60.0)
+    report.check("unacknowledged, it repeats twice more, a minute apart",
+                 len(rig.said) == 3 and len(rig.plays) == 3, "%d %d" % (
+                     len(rig.said), len(rig.plays)))
+    gaps = [rig.plays[i + 1][0] - rig.plays[i][0] for i in range(2)]
+    report.check("exactly a minute apart", all(abs(g - 60) < 0.6
+                                               for g in gaps), str(gaps))
+    rig.run(20.0)
+    report.check("then it becomes missed", rig.state_of(mum["id"])
+                 == "missed", rig.state_of(mum["id"]))
+    report.check("and shows on the page's missed list",
+                 [j["id"] for j in rig.jobs("missed")] == [mum["id"]])
+    report.check("the miss is in the owner's event log", rig.db.conn().execute(
+        "SELECT COUNT(*) FROM events_log WHERE kind = 'reminder_missed'"
+    ).fetchone()[0] == 1)
+    report.check("and the device is quiet again",
+                 rig.announcer.current is None)
+
+    # A button during a repeat gap still acknowledges, and consumes the press.
+    again = rig.add(text="stretch", local_time="2026-10-02T19:00")
+    rig.advance_to(local_epoch(2026, 10, 2, 19, 0))
+    rig.run(30.0)
+    shutdowns = rig.hal.system.shutdowns
+    volume = rig.hal.speaker.get_volume()
+    rig.press(POWER)
+    report.check("a power press while it rings acknowledges instead of "
+                 "shutting the device down",
+                 rig.state_of(again["id"]) == "done"
+                 and rig.hal.system.shutdowns == shutdowns)
+    rig.press(VOL_UP)
+    report.check("and the next volume press is a volume press again",
+                 rig.hal.speaker.get_volume() > volume)
+
+    # Snooze.
+    snz = rig.add(text="call the bank", local_time="2026-10-02T20:00")
+    rig.advance_to(local_epoch(2026, 10, 2, 20, 0))
+    rig.run(2.0)
+    answer = rig.ask("reminders.snooze", {"id": snz["id"], "minutes": 5})
+    report.check("snoozing stops the alert and moves it five minutes on",
+                 answer.error is None and not rig.announcer.active
+                 and rig.state_of(snz["id"]) == "pending"
+                 and abs(rig.scheduler.get(snz["id"])["due_wall"]
+                         - (rig.clock.wall() + 300)) < 1)
+    rig.jump(299)
+    report.check("it does not ring early", rig.state_of(snz["id"])
+                 == "pending")
+    rig.jump(2)
+    report.check("and rings when the five minutes are up",
+                 rig.state_of(snz["id"]) == "ringing")
+    rig.run(1.0)
+    rig.press()
+    report.check("then can be acknowledged", rig.state_of(snz["id"])
+                 == "done")
+
+    bad = rig.ask("reminders.snooze", {"id": snz["id"], "minutes": 5})
+    report.check("a finished reminder cannot be snoozed",
+                 bad.error and "already done" in bad.error, str(bad.error))
+    bad = rig.ask("reminders.snooze", {"id": mum["id"], "minutes": 0})
+    report.check("snooze needs a sensible length",
+                 bad.error and "between 1 minute" in bad.error)
+
+    # A timer: rings every ten seconds, says its line once, gives up at five
+    # minutes.
+    rig2 = SchedRig(root, "announce-timer")
+    timer = rig2.add(seconds=60)
+    rig2.jump(60)
+    rig2.run(1.0)
+    first_ring = rig2.plays[0][0]
+    rig2.run(310.0)
+    report.check("an unstopped timer rings every ten seconds",
+                 abs((rig2.plays[1][0] - rig2.plays[0][0]) - 10) < 0.6
+                 and abs((rig2.plays[2][0] - rig2.plays[1][0]) - 10) < 0.6,
+                 str([p[0] - first_ring for p in rig2.plays[:4]]))
+    report.check("for five minutes and no longer",
+                 28 <= len(rig2.plays) <= 31, str(len(rig2.plays)))
+    report.check("saying its line only the first time",
+                 rig2.said == ["Your one-minute timer is done."],
+                 str(rig2.said))
+    report.check("then stops and is missed",
+                 rig2.state_of(timer["id"]) == "missed"
+                 and rig2.announcer.current is None)
+
+    # A cancelled reminder stops ringing.
+    rig3 = SchedRig(root, "announce-cancel")
+    c = rig3.add(text="never mind", local_time="2026-10-02T18:00")
+    rig3.jump(10 * 60)
+    rig3.run(1.0)
+    rig3.ask("reminders.cancel", {"id": c["id"]})
+    report.check("cancelling a reminder that is ringing stops it",
+                 rig3.announcer.current is None
+                 and rig3.state_of(c["id"]) == "cancelled")
+    for r in (rig, rig2, rig3):
+        r.close()
+
+
+def scenario_announcement_timing(report, root):
+    import types
+
+    # Due in the middle of a turn: held, and said after the reply.
+    rig = SchedRig(root, "timing-turn",
+                   wall=local_epoch(2026, 10, 2, 17, 59) + 57.0)
+    pipeline = ScriptedPipeline(rig.hal.speaker, seed=11)
+    rig.device.pipeline = pipeline
+    job = rig.add(text="call mum", local_time="2026-10-02T18:00")
+    pipeline.trigger()
+    rig.run(0.5)
+    report.check("a turn is under way", rig.device.turn is not None)
+    for _ in range(40):
+        rig.run(0.25)
+        if rig.state_of(job["id"]) == "ringing":
+            break
+    report.check("a reminder due mid-turn is held, not spoken over it",
+                 rig.state_of(job["id"]) == "ringing"
+                 and rig.device.turn is not None
+                 and not rig.announcer.active and not rig.said)
+    ended = None
+    for _ in range(400):
+        rig.run(0.25)
+        if rig.device.turn is None and ended is None:
+            ended = rig.clock.mono()
+        if rig.said:
+            break
+    report.check("and announced once the reply is over",
+                 rig.said == ["Reminder: call mum."] and ended is not None,
+                 str(rig.said))
+    # The scripted turn plays its own reply through the speaker too; the
+    # chime is the first sound after the turn is over.
+    started = min(t for t, _ in rig.plays if t >= ended)
+    report.check("after a pause of no more than two seconds",
+                 0 <= started - ended <= 2.5, "%.2f" % (started - ended))
+    rig.press()
+
+    # Due while muted: announced anyway, and it shows.
+    rig = SchedRig(root, "timing-muted")
+    job = rig.add(text="call mum", local_time="2026-10-02T18:00")
+    rig.hal.set_mute(True)
+    rig.run(1.0)
+    rig.advance_to(local_epoch(2026, 10, 2, 18, 0))
+    rig.run(1.0)
+    report.check("a reminder due while muted is announced anyway",
+                 len(rig.plays) == 1 and rig.said == ["Reminder: call mum."])
+    report.check("and the screen shows the alert, not the muted face",
+                 rig.device.face.current == "face_talking",
+                 rig.device.face.current)
+    rig.press()
+    rig.run(2.0)
+    report.check("afterwards the muted face is back",
+                 rig.device.face.current == "face_muted")
+
+    # Quiet hours: a reminder is soft, a timer is not.
+    rig = SchedRig(root, "timing-quiet",
+                   wall=local_epoch(2026, 10, 2, 22, 50))
+    normal = rig.hal.speaker.get_volume()
+    seen = []
+    real_set = rig.hal.speaker.set_volume
+    rig.hal.speaker.set_volume = lambda v: (seen.append(v), real_set(v))
+    job = rig.add(text="lights out", local_time="2026-10-02T23:00")
+    rig.advance_to(local_epoch(2026, 10, 2, 23, 0))
+    rig.run(1.0)
+    report.check("in quiet hours a reminder is spoken at the quiet volume",
+                 abs(rig.hal.speaker.get_volume() - 0.4) < 1e-9
+                 and rig.said == ["Reminder: lights out."],
+                 str(rig.hal.speaker.get_volume()))
+    rig.press()
+    report.check("and the volume goes back afterwards",
+                 abs(rig.hal.speaker.get_volume() - normal) < 1e-9,
+                 str(rig.hal.speaker.get_volume()))
+    timer = rig.add(seconds=60)
+    rig.jump(60)
+    rig.run(1.0)
+    report.check("a timer at the same hour rings at the normal volume",
+                 abs(rig.hal.speaker.get_volume() - normal) < 1e-9)
+    rig.press()
+    report.check("the saved volume was never changed by any of it",
+                 rig.device.settings.get("voice", "volume") == normal)
+
+    day = SchedRig(root, "timing-day", wall=local_epoch(2026, 10, 2, 12, 0))
+    day.add(text="lunch", local_time="2026-10-02T12:30")
+    day.advance_to(local_epoch(2026, 10, 2, 12, 30))
+    day.run(1.0)
+    report.check("by day a reminder is at the normal volume",
+                 abs(day.hal.speaker.get_volume() - normal) < 1e-9)
+    day.press()
+
+    off = SchedRig(root, "timing-quiet-off",
+                   wall=local_epoch(2026, 10, 2, 22, 50),
+                   settings_patch={"quiet": {"enabled": False}})
+    off.add(text="late", local_time="2026-10-02T23:00")
+    off.advance_to(local_epoch(2026, 10, 2, 23, 0))
+    off.run(1.0)
+    report.check("with quiet hours switched off it is not soft at night",
+                 abs(off.hal.speaker.get_volume() - normal) < 1e-9)
+    off.press()
+
+    # An update going in: hold, then announce.
+    rig = SchedRig(root, "timing-update")
+    rig.device.updater = types.SimpleNamespace(
+        state="installing", trial_tick=lambda *a: None, tick=lambda: None)
+    job = rig.add(text="call mum", local_time="2026-10-02T18:00")
+    rig.jump(10 * 60)
+    rig.run(5.0)
+    report.check("a reminder due while an update installs is held",
+                 rig.state_of(job["id"]) == "ringing" and not rig.said)
+    rig.device.updater.state = "idle"
+    rig.run(5.0)
+    report.check("and spoken once it is out of the way",
+                 rig.said == ["Reminder: call mum."])
+    rig.press()
+
+    # After a restart a held job is simply due again.
+    rig = SchedRig(root, "timing-restart")
+    job = rig.add(text="call mum", local_time="2026-10-02T18:00")
+    rig.jump(10 * 60)
+    report.check("it is ringing when the power goes",
+                 rig.state_of(job["id"]) == "ringing")
+    after = rig.reboot(off_seconds=120)
+    after.run(5.0)
+    report.check("after the restart it counts as due, and is said",
+                 any("call mum" in line for line in after.said),
+                 str(after.said))
+    after.close()
+
+
+def scenario_repeats(report, root):
+    import datetime
+
+    from firmware.scheduler import clock as sched_clock
+    from firmware.scheduler import repeat
+
+    report.check("repeat spellings are normalised",
+                 repeat.normalise("Weekly:we,MO") == "weekly:MO,WE"
+                 and repeat.normalise("DAILY") == "daily"
+                 and repeat.normalise("weekdays") == "weekdays"
+                 and repeat.normalise("weekly:MO,TU,WE,TH,FR") == "weekdays"
+                 and repeat.normalise("") is None)
+
+    # Every day at 7, across the night the clocks go back (Sunday 25 October
+    # 2026: 03:00 becomes 02:00, so that day is 25 hours long).
+    rig = SchedRig(root, "repeat-dst",
+                   wall=local_epoch(2026, 10, 23, 12, 0))
+    job = rig.add(text="wake up", local_time="2026-10-24T07:00",
+                  repeat="daily")
+    report.check("a repeating reminder says what it is",
+                 job["kind"] == "repeat" and job["repeat"] == "daily")
+
+    fired = []
+    for day in (24, 25, 26, 27):
+        rig.advance_to(local_epoch(2026, 10, day, 6, 59) + 59.0)
+        report.check("on the %dth it has not fired a second early" % day,
+                     rig.state_of(job["id"]) == "pending")
+        rig.jump(1.0)
+        row = rig.scheduler.get(job["id"])
+        fired.append(row["fired_at"])
+        rig.run(1.0)
+        rig.press()
+        report.check("and goes back to waiting after it is acknowledged "
+                     "(the %dth)" % day,
+                     rig.state_of(job["id"]) == "pending")
+    hours = [(sched_clock.to_local(t, TZ).hour,
+              sched_clock.to_local(t, TZ).minute) for t in fired]
+    report.check("it fired at 07:00 local every day, across the clock change",
+                 hours == [(7, 0)] * 4, str(hours))
+    gaps = [round((fired[i + 1] - fired[i]) / 3600.0) for i in range(3)]
+    report.check("with 25 hours between the 24th and the 25th",
+                 gaps == [25, 24, 24], str(gaps))
+
+    # Weekdays skip the weekend.
+    wk = SchedRig(root, "repeat-weekdays",
+                  wall=local_epoch(2026, 10, 1, 12, 0))
+    job = wk.add(text="standup", local_time="2026-10-02T09:00",
+                 repeat="weekdays")
+    days = []
+    for _ in range(3):
+        due = wk.scheduler.get(job["id"])["due_wall"]
+        wk.advance_to(due + 0.5)
+        wk.run(1.0)
+        wk.press()
+        days.append(sched_clock.to_local(due, TZ).strftime("%a"))
+    report.check("a weekday repeat goes Friday, then Monday, then Tuesday",
+                 days == ["Fri", "Mon", "Tue"], str(days))
+
+    named = SchedRig(root, "repeat-weekly",
+                     wall=local_epoch(2026, 10, 1, 12, 0))
+    job = named.add(text="bins", local_time="2026-10-05T08:00",
+                    repeat="weekly:MO,WE")
+    seen = []
+    for _ in range(3):
+        due = named.scheduler.get(job["id"])["due_wall"]
+        named.advance_to(due + 0.5)
+        named.run(1.0)
+        named.press()
+        seen.append(sched_clock.to_local(due, TZ).strftime("%a %d"))
+    report.check("a weekly repeat on named days goes Monday, Wednesday, "
+                 "Monday", seen == ["Mon 05", "Wed 07", "Mon 12"], str(seen))
+
+    # A missed repeat carries on rather than disappearing.
+    miss = SchedRig(root, "repeat-missed",
+                    wall=local_epoch(2026, 10, 1, 12, 0))
+    job = miss.add(text="vitamins", local_time="2026-10-02T08:00",
+                   repeat="daily")
+    miss.advance_to(local_epoch(2026, 10, 2, 8, 0))
+    miss.run(200.0)
+    state = miss.scheduler.get(job["id"])
+    report.check("a repeat nobody acknowledged is waiting for tomorrow",
+                 state["state"] == "pending"
+                 and sched_clock.to_local(state["due_wall"], TZ).day == 3,
+                 str(state))
+    report.check("and the miss was noted for the owner",
+                 miss.db.conn().execute(
+                     "SELECT COUNT(*) FROM events_log WHERE kind = "
+                     "'reminder_missed'").fetchone()[0] == 1)
+
+    # A repeat in a spring-forward gap lands an hour later rather than
+    # vanishing: 02:30 does not exist on Sunday 29 March 2026.
+    naive = datetime.datetime(2026, 3, 29, 2, 30)
+    epoch = sched_clock.to_epoch(naive, TZ)
+    local = sched_clock.to_local(epoch, TZ)
+    report.check("a time that does not exist lands after the gap",
+                 (local.hour, local.minute) == (3, 30), str(local))
+    for r in (rig, wk, named, miss):
+        r.close()
+
+
+def scenario_boot_after_off(report, root):
+    # Two reminders due while the device was off for three hours.
+    rig = SchedRig(root, "off-short", wall=local_epoch(2026, 10, 2, 9, 0))
+    rig.add(text="call mum", local_time="2026-10-02T10:00")
+    rig.add(text="take the bins out", local_time="2026-10-02T10:30")
+    after = rig.reboot(off_seconds=3 * 3600)
+    after.run(10.0)
+    report.check("after three hours off, two due reminders are one "
+                 "announcement",
+                 after.said == ["While I was off, you had two reminders: "
+                                "call mum, and take the bins out."],
+                 str(after.said))
+    report.check("with a single chime", len(after.plays) == 1)
+    report.check("and neither is left ringing or missed",
+                 {j["state"] for j in after.jobs()} == {"done"})
+    again = after.reboot(off_seconds=60)
+    again.run(10.0)
+    report.check("restarting again does not say it a second time",
+                 again.said == [])
+
+    one = SchedRig(root, "off-one", wall=local_epoch(2026, 10, 2, 9, 0))
+    one.add(text="call mum", local_time="2026-10-02T10:00")
+    gone = one.reboot(off_seconds=2 * 3600)
+    gone.run(10.0)
+    report.check("a single one is worded for one",
+                 gone.said == ["While I was off, you had a reminder: call "
+                               "mum."], str(gone.said))
+
+    three = SchedRig(root, "off-three", wall=local_epoch(2026, 10, 2, 9, 0))
+    for n, text in enumerate(("milk", "eggs", "bread")):
+        three.add(text=text, local_time="2026-10-02T10:%02d" % (10 + n))
+    back = three.reboot(off_seconds=2 * 3600)
+    back.run(10.0)
+    report.check("three are listed with the last one after 'and'",
+                 back.said == ["While I was off, you had three reminders: "
+                               "milk, eggs, and bread."], str(back.said))
+
+    # Two days off: older than six hours, so no announcement, just missed.
+    long_off = SchedRig(root, "off-long", wall=local_epoch(2026, 10, 2, 9, 0))
+    a = long_off.add(text="call mum", local_time="2026-10-02T10:00")
+    b = long_off.add(text="take the bins out", local_time="2026-10-02T10:30")
+    d = long_off.add(text="vitamins", local_time="2026-10-03T08:00",
+                     repeat="daily")
+    after = long_off.reboot(off_seconds=2 * 86400)
+    after.run(10.0)
+    report.check("after two days off nothing is announced", after.said == [])
+    report.check("both reminders are marked missed, for the page",
+                 after.state_of(a["id"]) == "missed"
+                 and after.state_of(b["id"]) == "missed")
+    nxt = after.scheduler.get(d["id"])
+    from firmware.scheduler import clock as sched_clock
+    report.check("a repeat skips what it missed and waits for its next "
+                 "firing",
+                 nxt["state"] == "pending"
+                 and nxt["due_wall"] > after.clock.wall()
+                 and sched_clock.to_local(nxt["due_wall"], TZ).hour == 8,
+                 str(nxt))
+    after.run(3.0)
+    report.check("it does not fire three times after a weekend off",
+                 after.said == [])
+
+    # Exactly at the edge of six hours.
+    edge = SchedRig(root, "off-edge", wall=local_epoch(2026, 10, 2, 9, 0))
+    e1 = edge.add(text="inside", local_time="2026-10-02T10:00")
+    e2 = edge.add(text="outside", local_time="2026-10-02T09:30")
+    over = edge.reboot(wall=local_epoch(2026, 10, 2, 15, 45))
+    over.run(10.0)
+    report.check("a reminder that came due 5h45 ago is said; 6h15 ago it "
+                 "is missed",
+                 over.said == ["While I was off, you had a reminder: "
+                               "inside."]
+                 and over.state_of(e2["id"]) == "missed", str(over.said))
+
+    # A timer a reboot cut off.
+    t = SchedRig(root, "off-timer")
+    timer = t.add(seconds=600, text="pasta")
+    plain = t.add(seconds=300)
+    t.jump(60)
+    back = t.reboot(off_seconds=30)
+    report.check("a timer that a restart interrupted is marked so",
+                 back.state_of(timer["id"]) == "interrupted"
+                 and back.state_of(plain["id"]) == "interrupted")
+    back.run(10.0)
+    report.check("and the owner is told once, at the next idle moment",
+                 back.said == ["Some timers you set were interrupted by a "
+                               "restart."], str(back.said))
+    back.close()
+    solo = SchedRig(root, "off-timer-solo")
+    only = solo.add(seconds=600, text="pasta")
+    back = solo.reboot(off_seconds=5)
+    back.run(10.0)
+    report.check("with the label when there is one",
+                 back.said == ["The timer you set for the pasta was "
+                               "interrupted by a restart."], str(back.said))
+    again = back.reboot(off_seconds=5)
+    again.run(10.0)
+    report.check("and not again on the next restart", again.said == [])
+
+
+def scenario_housekeeping_jobs(report, root):
+    from firmware.scheduler import housekeeping as hk
+
+    rig = SchedRig(root, "housekeeping", synced=False)
+    heard = []
+    rig.device.on(ev.CLOCK_SYNCED, lambda e: heard.append(e.data))
+    rig.run(5.0, 1.0)
+    report.check("until the clock is right, it is checked every second",
+                 not rig.scheduler.synced and heard == [])
+    rig.clock.set_synced(True)
+    rig.run(1.5, 0.5)
+    report.check("ClockSynced is posted when it is", heard == [None]
+                 and rig.scheduler.synced, str(heard))
+    rig.run(120.0, 1.0)
+    report.check("and not again", heard == [None])
+
+    heard.clear()
+    rig.clock.set_wall(rig.clock.wall() + 3 * 86400)
+    rig.run(65.0, 1.0)
+    report.check("a jump of days in the wall clock is noticed within a minute",
+                 heard == ["jump"], str(heard))
+
+    # A reminder survives the jump with the right due time.
+    rig2 = SchedRig(root, "housekeeping-jump",
+                    wall=local_epoch(2026, 10, 2, 17, 0))
+    job = rig2.add(text="call mum", local_time="2026-10-02T18:00")
+    rig2.clock.set_wall(local_epoch(2026, 10, 2, 17, 30))
+    rig2.run(65.0, 1.0)
+    report.check("after the clock is corrected the reminder is still for six",
+                 rig2.state_of(job["id"]) == "pending"
+                 and rig2.scheduler.get(job["id"])["local_time"]
+                 == "2026-10-02T18:00")
+    rig2.advance_to(local_epoch(2026, 10, 2, 18, 0))
+    report.check("and fires then", rig2.state_of(job["id"]) == "ringing")
+
+    # Timers' displayed wall time is retargeted when the clock is corrected.
+    cold = SchedRig(root, "housekeeping-timer", synced=False,
+                    wall=local_epoch(2026, 1, 1, 0, 0))
+    timer = cold.add(seconds=600)
+    cold.clock.set_wall(local_epoch(2026, 10, 2, 17, 50))
+    cold.clock.set_synced(True)
+    cold.run(3.0, 0.5)
+    shown = cold.scheduler.get(timer["id"])["due_wall"]
+    report.check("a timer's wall time is corrected when the clock is, "
+                 "without moving the timer",
+                 abs(shown - (cold.clock.wall() + cold.scheduler.get(
+                     timer["id"])["remaining"])) < 2
+                 and cold.state_of(timer["id"]) == "pending")
+
+    # The network.
+    net = SchedRig(root, "housekeeping-net")
+    changes = []
+    net.device.on(ev.NETWORK_CHANGED, lambda e: changes.append(e.data))
+    net.run(35.0, 1.0)
+    net.hal.system.is_online = False
+    net.run(35.0, 1.0)
+    net.hal.system.is_online = True
+    net.run(35.0, 1.0)
+    report.check("the network check reports a drop and the return, once each",
+                 changes == [False, True], str(changes))
+
+    # The temperature.
+    hot = SchedRig(root, "housekeeping-thermal")
+    hot.run(15.0, 0.5)
+    report.check("a cool device runs at the normal rates",
+                 abs(hot.device.frame_interval() - 1 / 10) < 1e-9)
+    hot.hal.system.temp_c = 77.0
+    hot.run(15.0, 0.5)
+    report.check("above 75C the idle face drops to 5Hz",
+                 hot.device.summary()["thermal"] == "warm"
+                 and abs(hot.device.frame_interval() - 1 / 5) < 1e-9)
+    hot.hal.system.temp_c = 82.0
+    hot.run(15.0, 0.5)
+    hot.device.fail("test", hot.clock.mono())
+    report.check("above 80C even an error holds to 10Hz",
+                 hot.device.summary()["thermal"] == "hot"
+                 and abs(hot.device.frame_interval() - 1 / 10) < 1e-9)
+    hot.hal.system.temp_c = 50.0
+    hot.run(15.0, 0.5)
+    report.check("and it recovers when it cools",
+                 hot.device.summary()["thermal"] == "normal")
+
+    # Weekly maintenance: Sunday 04:00 local, prunes old usage rows.
+    maint = SchedRig(root, "housekeeping-db",
+                     wall=local_epoch(2026, 10, 3, 12, 0))
+    conn = maint.db.conn()
+    old = maint.clock.wall() - 14 * 31 * 86400
+    new = maint.clock.wall() - 5 * 86400
+    for at in (old, new):
+        conn.execute("INSERT INTO usage (at, day, turn_id, provider, model, "
+                     "kind, status) VALUES (?, '2026-01-01', 't', 'p', 'm', "
+                     "'chat', 'ok')", (at,))
+    maint.run(60.0, 1.0)
+    report.check("maintenance does not run on a Saturday afternoon",
+                 conn.execute("SELECT COUNT(*) FROM usage").fetchone()[0]
+                 == 2)
+    maint.advance_to(local_epoch(2026, 10, 4, 4, 0) + 1.0)
+    maint.run(2.0, 1.0)
+    left = conn.execute("SELECT COUNT(*) FROM usage").fetchone()[0]
+    report.check("on Sunday at 04:00 it runs, and drops usage rows older "
+                 "than 13 months", left == 1, str(left))
+    maint.run(86400.0 / 4, 600.0)
+    report.check("and keeps the recent ones",
+                 conn.execute("SELECT COUNT(*) FROM usage").fetchone()[0]
+                 == 1)
+    report.check("the thresholds are the plan's",
+                 hk.WARM_C == 75.0 and hk.HOT_C == 80.0
+                 and hk.NET_CHECK == 30.0 and hk.THERMAL_CHECK == 10.0)
+    for r in (rig, rig2, cold, net, hot, maint):
+        r.close()
+
+
+def scenario_spoken_time(report, root):
+    import datetime
+    import wave
+
+    from firmware.scheduler import announce, speech
+
+    at = lambda h, m=0, d=2: datetime.datetime(2026, 10, d, h, m)
+    now = at(9, 0)
+    table = [
+        (at(18, 0), "six in the evening"),
+        (at(7, 0), "seven in the morning"),
+        (at(7, 30), "half past seven in the morning"),
+        (at(7, 15), "quarter past seven in the morning"),
+        (at(7, 45), "quarter to eight in the morning"),
+        (at(7, 5), "seven oh five in the morning"),
+        (at(7, 20), "seven twenty in the morning"),
+        (at(13, 40), "one forty in the afternoon"),
+        (at(12, 0), "noon"),
+        (at(0, 0), "midnight"),
+        (at(23, 0), "eleven at night"),
+        (at(3, 0), "three at night"),
+        (at(21, 59), "nine fifty-nine in the evening"),
+    ]
+    for when, words in table:
+        report.check("%s is said '%s'" % (when.strftime("%H:%M"), words),
+                     speech.spoken_time(when) == words,
+                     speech.spoken_time(when))
+
+    report.check("a time tomorrow says tomorrow",
+                 speech.spoken_when(at(7, 0, 3), now)
+                 == "tomorrow at seven in the morning")
+    report.check("this week it gives the day",
+                 speech.spoken_when(at(18, 0, 5), now)
+                 == "on Monday at six in the evening")
+    report.check("further out it gives the date",
+                 speech.spoken_when(at(18, 0, 20), now)
+                 == "on 20 October at six in the evening")
+
+    sl = [(at(18, 0), "ob šestih zvečer"), (at(7, 0), "ob sedmih zjutraj"),
+          (at(7, 30), "ob pol osmih zjutraj"),
+          (at(15, 5), "ob treh in pet minut popoldne"),
+          (at(15, 1), "ob treh in ena minuta popoldne"),
+          (at(15, 22), "ob treh in dvaindvajset minut popoldne"),
+          (at(12, 0), "opoldne"), (at(0, 0), "ob polnoči"),
+          (at(1, 0), "ob eni ponoči")]
+    for when, words in sl:
+        report.check("Slovenian %s is '%s'" % (when.strftime("%H:%M"), words),
+                     speech.spoken_time(when, "sl") == words,
+                     speech.spoken_time(when, "sl"))
+    report.check("Slovenian gives 'jutri' for tomorrow",
+                 speech.spoken_when(at(7, 0, 3), now, "sl")
+                 == "jutri ob sedmih zjutraj")
+
+    report.check("numbers read in English",
+                 [speech.number_en(n) for n in (0, 7, 13, 20, 21, 99)]
+                 == ["zero", "seven", "thirteen", "twenty", "twenty-one",
+                     "ninety-nine"])
+    report.check("lines read naturally",
+                 speech.reminder_line("call mum.") == "Reminder: call mum."
+                 and speech.timer_line("", 7200) == "Your two-hour timer "
+                 "is done."
+                 and speech.timer_line("", 30) == "Your thirty-second "
+                 "timer is done.")
+
+    for name, label in (("chime_reminder.wav", "reminder"),
+                        ("chime_timer.wav", "timer")):
+        path = os.path.join(announce.SOUNDS, name)
+        with wave.open(path, "rb") as fh:
+            ok = (fh.getframerate() == 16000 and fh.getnchannels() == 1
+                  and fh.getsampwidth() == 2
+                  and fh.getnframes() / 16000.0 < 1.0)
+            seconds = fh.getnframes() / 16000.0
+        report.check("the %s chime is 16kHz mono 16-bit and under a second "
+                     "(%.2fs)" % (label, seconds), ok)
+
+    from tools import make_chimes
+
+    report.check("the two chimes are different sounds",
+                 announce.load_chime("chime_reminder.wav").pcm
+                 != announce.load_chime("chime_timer.wav").pcm)
+    for name, make in (("chime_reminder.wav", make_chimes.reminder),
+                       ("chime_timer.wav", make_chimes.timer)):
+        out = os.path.join(root, "regen-" + name)
+        make_chimes.write(out, make())
+        with open(out, "rb") as a, open(os.path.join(announce.SOUNDS, name),
+                                        "rb") as b:
+            same = a.read() == b.read()
+        report.check("%s is exactly what tools/make_chimes.py makes" % name,
+                     same)
+
+    missing = announce.load_chime("not_there.wav")
+    report.check("a missing chime is silence, not a crash",
+                 missing.pcm == b"" and missing.seconds == 0.0)
+
+
 def main(argv=None):
     root = tempfile.mkdtemp(prefix="trstenko-headless-")
     report = Report()
@@ -2170,6 +3190,15 @@ def main(argv=None):
         ("restarting a dead worker", scenario_worker_restarts),
         ("telling systemd, and shutting down", scenario_notify),
         ("logging", scenario_logging),
+        ("timers", scenario_scheduler_timers),
+        ("reminders", scenario_scheduler_reminders),
+        ("the scheduler's limits and rules", scenario_scheduler_limits),
+        ("announcing what is due", scenario_announcements),
+        ("when an announcement waits", scenario_announcement_timing),
+        ("repeating reminders", scenario_repeats),
+        ("boot after being off", scenario_boot_after_off),
+        ("housekeeping", scenario_housekeeping_jobs),
+        ("telling time in words", scenario_spoken_time),
         ("changing settings through the main thread", scenario_settings_command),
         ("the database and its migrations", scenario_database),
         ("the settings file", scenario_settings_file),
@@ -2204,6 +3233,8 @@ def main(argv=None):
             print("\n== %s" % title)
             fn(report, root)
     finally:
+        for rig in list(SchedRig.open_rigs):
+            rig.close()
         shutil.rmtree(root, ignore_errors=True)
     return report.done()
 

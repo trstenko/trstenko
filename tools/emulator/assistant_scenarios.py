@@ -4227,8 +4227,10 @@ class AssistantRig:
             rows[n]["allow_http"] = True
         providers = table.Providers(rows)
 
-        folder = voices_mod.voices_dir(self.sched.data)
+        folder = os.path.join(self.sched.data, "voices")
         os.makedirs(folder, exist_ok=True)
+        # The folder this rig means, whatever else is installed on the PC.
+        os.environ["TRSTENKO_VOICES"] = folder
         registry = voices_mod.VoiceRegistry.load()
         if voice:
             for vid in registry.ids():
@@ -4297,6 +4299,7 @@ class AssistantRig:
         return self.sched.plays
 
     def close(self):
+        os.environ.pop("TRSTENKO_VOICES", None)
         self._watch.set()
         self.pump.__exit__(None, None, None)
         self.sched.close()

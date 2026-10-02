@@ -4523,6 +4523,27 @@ def scenario_assistant_commands(report, root):
         report.check("without ever starting a conversation",
                      fake.chat_requests() == [] or len(
                          fake.chat_requests()) == 1)
+
+        # Every ring opens its own window, not only the first.
+        rig.ask("reminders.add", {"seconds": 5, "text": "pasta"})
+        rig.clock.advance(5.5)
+        rig.wait(step, 20)
+        rig.wait(lambda: sum(c["id"].startswith("ack-")
+                             for c in rig.audio.captures) >= 2, 5)
+        first = sum(c["id"].startswith("ack-") for c in rig.audio.captures)
+        rig.clock.advance(10.5)         # the timer's gap: it rings again
+        rig.wait(lambda: rig.device.announcer.current is not None
+                 and rig.device.announcer.current.rings >= 2, 5)
+        rig.wait(step, 40)
+        rig.wait(lambda: sum(c["id"].startswith("ack-")
+                             for c in rig.audio.captures) > first, 5)
+        report.check("a second ring opens a second window, so it can be "
+                     "stopped by voice too",
+                     sum(c["id"].startswith("ack-")
+                         for c in rig.audio.captures) > first,
+                     "%s %s" % (rig.audio.captures, vars(
+                         rig.device.announcer.current)
+                         if rig.device.announcer.current else None))
     finally:
         rig.close()
 

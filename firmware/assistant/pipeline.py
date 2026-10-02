@@ -289,10 +289,22 @@ class AssistantPipeline(base.Pipeline):
         """Listen without a wake word while something is going off."""
         announcer = getattr(self.device, "announcer", None)
         if announcer is None or not announcer.in_window:
-            self._ack_armed = None
+            if self._ack_armed is not None:
+                # The window closed (the next ring, or the end): stop
+                # listening for "stop" so the wake word is not held back, and
+                # so the next window can open.
+                self._ack_armed = None
+                if self.turn is None or self.turn.finished:
+                    self.audio.abort()
             return
+        # One capture per window. A timer rings every ten seconds, and each
+        # ring opens a new window; keying on the job alone left every ring
+        # after the first impossible to stop by voice.
+        cur = announcer.current
         ringing = announcer.ringing
-        if ringing is not None and self._ack_armed == ringing:
+        key = (ringing if ringing is not None else -1,
+               cur.rings if cur is not None else 0)
+        if self._ack_armed == key:
             return
-        self._ack_armed = ringing if ringing is not None else -1
+        self._ack_armed = key
         self.audio.begin_capture("ack-%d" % next(self._acks), followup=True)

@@ -21,6 +21,7 @@ things fail, and `_face_for` works out what the device looks like. That is why
 muting mid-sentence cannot leave a talking face on screen.
 """
 
+import copy
 import logging
 import time
 
@@ -30,7 +31,9 @@ from .face import states as state_defs
 from .face.controller import FaceController
 from .face.renderer import FaceRenderer
 from .hal import ButtonDecoder, LONG, POWER, SETUP_COMBO, SHORT, VOL_DOWN, VOL_UP
+from .quiet import QuietHours
 from .storage.redact import redact
+from .storage.settings import SettingsError
 from .supervisor import Supervisor
 
 log = logging.getLogger("trstenko.device")
@@ -49,6 +52,11 @@ VOLUME_STEP = 0.1
 # A step that raises on this many ticks in a row is broken rather than
 # unlucky. About a second at 30Hz.
 FAULT_LIMIT = 30
+
+# The volume buttons change a setting too, but a card should not be written on
+# every press. The change is held in memory and written once it has been still
+# this long (plan 06, SD-card wear).
+SETTINGS_FLUSH_EVERY = 5.0
 
 # How long the error face stays up after a failed turn. Long enough to read as
 # an answer to what just happened, short enough that the device does not sulk.
@@ -76,6 +84,9 @@ class Device:
         self.db = db
         self.settings = settings
         self.secrets = secrets
+        self._settings_dirty = False
+        self._settings_listeners = []
+        self.quiet = QuietHours()
 
         # The one inbox. Services are handed this to post to.
         self.events = events or ev.EventQueue()
@@ -124,6 +135,8 @@ class Device:
         self.add_step("conversation", self._conversation)
         self.add_step("workers", self.supervisor.tick)
         self.add_step("updater", self._updater)
+        self.add_step("settings", self._flush_settings,
+                      every=SETTINGS_FLUSH_EVERY)
         self.add_step("screen", self._screen)
         self.add_step("draw", self._draw_frame)
 
@@ -131,7 +144,9 @@ class Device:
         self.on(ev.WORKER_DIED,
                 lambda event: self.supervisor.died(event.data, self.mono()))
         self.command("set_volume", self._cmd_set_volume)
-        self.command("settings.update", self._cmd_settings_unavailable)
+        self.command("settings.update", self._cmd_settings_update)
+        if self.settings is not None:
+            self._apply_settings(None)
 
         if self.updater is not None:
             self.updater.set_busy_hint(lambda: self.turn is not None)
@@ -245,13 +260,73 @@ class Device:
         self._set_volume(float(level))
         return {"volume": self.hal.speaker.get_volume()}
 
-    def _cmd_settings_unavailable(self, patch):
-        raise ev.CommandError("settings cannot be changed yet")
-
     def _set_volume(self, level):
         level = max(0.0, min(1.0, level))
         self.hal.speaker.set_volume(level)
+        if self.settings is not None:
+            # What a reboot should come back to. Written later, not now.
+            self.settings.data["voice"]["volume"] = round(level, 2)
+            self._settings_dirty = True
         self.log("volume %d%%" % round(level * 100))
+
+    # ---- settings ----
+
+    def on_settings(self, fn):
+        """Call `fn(changed)` after a settings change, with the dotted names
+        of what changed. Only for services that have to react; everything else
+        reads `device.settings` when it needs a value."""
+        self._settings_listeners.append(fn)
+
+    def _cmd_settings_update(self, patch):
+        """Validate, apply in memory, write the file, then tell the services
+        that care. In that order: a patch that cannot be written is undone
+        rather than left half-true, and nobody is told about a change that did
+        not happen."""
+        if self.settings is None:
+            raise ev.CommandError("settings are not available on this device")
+        try:
+            clean = self.settings.validate(patch)
+        except SettingsError as exc:
+            raise ev.CommandError(str(exc))
+
+        before = copy.deepcopy(self.settings.data)
+        changed = self.settings.apply(clean)
+        if changed:
+            try:
+                self.settings.save()
+            except OSError as exc:
+                self.settings.data = before
+                log.error("settings could not be written: %s", exc)
+                raise ev.CommandError("the settings could not be saved, so "
+                                      "nothing was changed")
+            self._settings_dirty = False
+            self.log("settings changed: %s" % ", ".join(changed))
+            self._apply_settings(changed)
+        return {"changed": changed, "settings": self.settings.public()}
+
+    def _apply_settings(self, changed):
+        """Push settings to the services that hold a copy of them. `changed`
+        is None at boot, meaning everything."""
+        def touched(prefix):
+            return changed is None or any(
+                name == prefix or name.startswith(prefix + ".")
+                for name in changed)
+
+        if touched("voice.volume"):
+            self.hal.speaker.set_volume(self.settings.get("voice", "volume"))
+        if touched("quiet"):
+            self.quiet = QuietHours.from_settings(self.settings.data["quiet"])
+        if changed is not None:
+            for fn in self._settings_listeners:
+                try:
+                    fn(changed)
+                except Exception:
+                    log.exception("a settings listener failed")
+
+    def _flush_settings(self, now):
+        if self._settings_dirty and self.settings is not None:
+            self.settings.save()
+            self._settings_dirty = False
 
     # ---- the updater ----
 
@@ -467,6 +542,7 @@ class Device:
         steps = [("turn", cancel_turn)]
         if self.pipeline is not None:
             steps.append(("pipeline", self.pipeline.close))
+        steps.append(("settings", lambda: self._flush_settings(None)))
         steps += self._closers
         steps += [("backlight", lambda: self.hal.panel.backlight(0.0)),
                   ("hal", self.hal.close)]

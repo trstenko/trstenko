@@ -1307,7 +1307,7 @@ def scenario_commands(report, root):
     cmd = ev.Command("settings.update", {"volume": 0.2})
     device.events.post(cmd)
     rig.step(0.1)
-    report.check("settings.update is a stub until settings exist",
+    report.check("settings.update on a device with no settings is refused",
                  cmd.answered and cmd.error)
 
     def explode(args):
@@ -2013,6 +2013,150 @@ def redact_mask():
     return redact.MASK
 
 
+def scenario_settings_command(report, root):
+    import datetime
+
+    from firmware.quiet import QuietHours
+    from firmware.storage.settings import Settings, default_path
+
+    data = os.path.join(root, "settings-cmd")
+    path = default_path(data)
+
+    def boot():
+        return Clocked(settings=Settings.load(path))
+
+    def ask(rig, patch):
+        cmd = ev.Command("settings.update", patch)
+        rig.device.events.post(cmd)
+        rig.step(0.1)
+        return cmd
+
+    rig = boot()
+    heard = []
+    rig.device.on_settings(heard.append)
+    report.check("a device with settings starts at the saved volume",
+                 abs(rig.hal.speaker.get_volume() - 0.6) < 1e-9,
+                 str(rig.hal.speaker.get_volume()))
+
+    bad = ask(rig, {"voice": {"volume": 7}, "quiet": {"from": "tonight"},
+                    "made_up": {"x": 1}})
+    report.check("a bad patch is refused",
+                 bad.answered and bad.result is None and bad.error)
+    report.check("and says what is wrong with each part",
+                 all(n in bad.error for n in
+                     ("voice.volume", "quiet.from", "made_up")), bad.error)
+    report.check("nothing changed in memory or on the speaker",
+                 abs(rig.hal.speaker.get_volume() - 0.6) < 1e-9
+                 and rig.device.settings.get("voice", "volume") == 0.6)
+    report.check("nothing was written", not os.path.exists(path))
+    report.check("and nobody was told", heard == [])
+
+    readonly = ask(rig, {"updates": {"channel": "dev"}})
+    report.check("the updater's own settings are not changed through here",
+                 readonly.error and "updates" in readonly.error,
+                 str(readonly.error))
+    nothing = ask(rig, {})
+    report.check("an empty patch is refused with an example",
+                 nothing.error and "volume" in nothing.error)
+
+    good = ask(rig, {"voice": {"volume": 0.35},
+                     "quiet": {"from": "23:30", "to": "06:00"}})
+    report.check("a good patch is answered with what changed",
+                 good.error is None
+                 and sorted(good.result["changed"]) == ["quiet.from",
+                                                         "quiet.to",
+                                                         "voice.volume"],
+                 str(good.result and good.result["changed"]))
+    report.check("the speaker follows the volume setting",
+                 abs(rig.hal.speaker.get_volume() - 0.35) < 1e-9)
+    report.check("quiet hours follow the quiet settings",
+                 rig.device.quiet.start == 23 * 60 + 30
+                 and rig.device.quiet.end == 6 * 60)
+    report.check("the services that care are told which settings changed",
+                 heard == [good.result["changed"]], str(heard))
+    report.check("the file is written before the answer comes back",
+                 os.path.exists(path))
+
+    same = ask(rig, {"voice": {"volume": 0.35}})
+    report.check("a patch that changes nothing writes nothing and tells nobody",
+                 same.result["changed"] == [] and len(heard) == 1)
+
+    # A restart: a new device from the same file.
+    again = boot()
+    report.check("a good patch survives a restart",
+                 abs(again.hal.speaker.get_volume() - 0.35) < 1e-9
+                 and again.device.quiet.start == 23 * 60 + 30
+                 and again.device.settings.get("quiet", "to") == "06:00")
+
+    # A write that fails is undone rather than left half-true.
+    heard.clear()
+    real_replace = os.replace
+
+    def refuse(src, dst):
+        raise OSError("read-only file system")
+
+    os.replace = refuse
+    try:
+        with quiet_logs():
+            failed = ask(rig, {"voice": {"volume": 0.9}})
+    finally:
+        os.replace = real_replace
+    report.check("a patch that cannot be saved is refused",
+                 failed.error and "could not be saved" in failed.error,
+                 str(failed.error))
+    report.check("and is undone: memory, speaker and listeners all untouched",
+                 rig.device.settings.get("voice", "volume") == 0.35
+                 and abs(rig.hal.speaker.get_volume() - 0.35) < 1e-9
+                 and heard == [])
+
+    # Volume from the buttons and the command is remembered, but not by
+    # writing the card on every press.
+    rig = boot()
+    with open(path, "r", encoding="utf-8") as fh:
+        saved = json.load(fh)["voice"]["volume"]
+    rig.hal.press(VOL_UP)
+    rig.step(0.2)
+    rig.hal.release(VOL_UP)
+    rig.step(0.2)
+    with open(path, "r", encoding="utf-8") as fh:
+        right_after = json.load(fh)["voice"]["volume"]
+    report.check("a volume button press does not write the card at once",
+                 right_after == saved and
+                 rig.device.settings.get("voice", "volume") > saved,
+                 "%s -> %s" % (saved, right_after))
+    rig.step(6.0)
+    with open(path, "r", encoding="utf-8") as fh:
+        later = json.load(fh)["voice"]["volume"]
+    report.check("it is written once things have been still",
+                 later == rig.device.settings.get("voice", "volume")
+                 and later > saved, "%s" % later)
+
+    cmd = ev.Command("set_volume", 0.15)
+    rig.device.events.post(cmd)
+    rig.step(0.1)
+    rig.device.close()
+    with open(path, "r", encoding="utf-8") as fh:
+        closed = json.load(fh)["voice"]["volume"]
+    report.check("and anything still pending is written on shutdown",
+                 closed == 0.15, str(closed))
+
+    # Quiet hours wrap midnight.
+    night = QuietHours(True, "22:00", "07:00", 0.4)
+    day = datetime.datetime(2026, 10, 2)
+    at = lambda h, m=0: day.replace(hour=h, minute=m)
+    report.check("22:00 to 07:00 covers late evening and early morning",
+                 night.active(at(23)) and night.active(at(2))
+                 and night.active(at(22, 0)) and night.active(at(6, 59)))
+    report.check("and not the day",
+                 not night.active(at(7, 0)) and not night.active(at(12))
+                 and not night.active(at(21, 59)))
+    report.check("a window inside one day works too",
+                 QuietHours(True, "13:00", "15:00").active(at(14))
+                 and not QuietHours(True, "13:00", "15:00").active(at(16)))
+    report.check("switched off, it is never quiet",
+                 not QuietHours(False, "22:00", "07:00").active(at(23)))
+
+
 def main(argv=None):
     root = tempfile.mkdtemp(prefix="trstenko-headless-")
     report = Report()
@@ -2026,6 +2170,7 @@ def main(argv=None):
         ("restarting a dead worker", scenario_worker_restarts),
         ("telling systemd, and shutting down", scenario_notify),
         ("logging", scenario_logging),
+        ("changing settings through the main thread", scenario_settings_command),
         ("the database and its migrations", scenario_database),
         ("the settings file", scenario_settings_file),
         ("API keys", scenario_secrets),

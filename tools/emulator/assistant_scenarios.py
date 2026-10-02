@@ -2975,3 +2975,187 @@ def scenario_loop_audio(report, root):
                                     [-3]["content"], list))
     finally:
         rig.close()
+
+
+# ---- speech to text (plan 03, plan 04) ----
+
+def scenario_stt(report, root):
+    import base64
+    import builtins
+    import io
+    import wave
+
+    from firmware.assistant import stt
+
+    pcm = bytes(range(256)) * 40 * 5          # 0.32s of "audio"
+    pcm = pcm + b"\x00" * (16000 * 2 * 2 - len(pcm))   # 2s
+    blob = stt.wav_from_pcm(pcm)
+    with wave.open(io.BytesIO(blob)) as w:
+        report.check("the WAV is a real one: mono, 16-bit, 16kHz, every frame",
+                     w.getnchannels() == 1 and w.getsampwidth() == 2
+                     and w.getframerate() == 16000
+                     and w.readframes(w.getnframes()) == pcm)
+    report.check("an odd trailing byte is dropped, not a corrupt file",
+                 len(stt.wav_from_pcm(pcm + b"\x01")) == len(blob))
+    message = stt.audio_message(pcm)
+    part = message["content"][0]
+    report.check("the chat message carries the WAV as base64 input_audio",
+                 message["role"] == "user" and part["type"] == "input_audio"
+                 and part["input_audio"]["format"] == "wav"
+                 and base64.b64decode(part["input_audio"]["data"]) == blob)
+    report.check("clicks and monologues are not sent",
+                 stt.check_audio(b"\x00" * 1000) == "too short"
+                 and stt.check_audio(b"\x00" * 16000 * 2 * 20) == "too long"
+                 and stt.check_audio(pcm) is None)
+
+    for text, noise in (("", True), ("...", True), (" . ", True),
+                        ("[BLANK_AUDIO]", True), ("(silence)", True),
+                        ("*cough*", True), ("Thank you for watching!", True),
+                        ("Thanks for watching.", True),
+                        ("set a timer for ten minutes", False),
+                        ("what is the time", False), (None, True)):
+        report.check("%r is %s" % (text, "noise" if noise else "speech"),
+                     stt.is_noise(text) == noise)
+    report.check("a transcript is tidied and capped",
+                 stt.clean_transcript("  set   a\ntimer ") == "set a timer"
+                 and len(stt.clean_transcript("word " * 500)) <= 600)
+
+    providers = table.load_providers()
+    keys = {"gemini", "openai", "groq", "xai"}
+    has = lambda n: n in keys
+    p = stt.plan(providers, "gemini", has)
+    report.check("Gemini hears inside the chat request",
+                 p.mode == "chat" and p.provider == "gemini")
+    p = stt.plan(providers, "openai", has)
+    report.check("OpenAI has its own speech service",
+                 p.mode == "upload" and p.model == "gpt-4o-mini-transcribe")
+    p = stt.plan(providers, "xai", has)
+    report.check("Grok cannot hear, so Gemini does it, in a request of its "
+                 "own", p.mode == "chat_stt" and p.provider == "gemini")
+    p = stt.plan(providers, "ollama", lambda n: n == "groq")
+    report.check("Ollama with only a Groq key uses Groq's Whisper",
+                 p.mode == "upload" and p.provider == "groq")
+    p = stt.plan(providers, "ollama", has, preferred="openai")
+    report.check("the owner's choice comes first",
+                 p.provider == "openai")
+    p = stt.plan(providers, "ollama", lambda n: False)
+    report.check("with nothing that can hear, it says so",
+                 not p.ok and p.reason == "no_stt")
+    p = stt.plan(providers, "openai", lambda n: n == "openai", "sl")
+    report.check("Slovenian is not offered to a provider that has not been "
+                 "shown to understand it",
+                 not p.ok and p.reason == "language")
+
+    fake = Fake("openai")
+    rig = MeterRig(root, "stt")
+    try:
+        tr = stt.Transcriber(table.Provider and _fake_providers(fake),
+                             lambda name: FAKE_KEY, fake.transport)
+        attempts = []
+        fake.queue(fp.transcript("set a timer for ten minutes"))
+        writes = []
+        real_open = builtins.open
+
+        def spy(file, mode="r", *a, **kw):
+            if any(c in str(mode) for c in "wax+"):
+                writes.append(file)
+            return real_open(file, mode, *a, **kw)
+
+        builtins.open = spy
+        try:
+            text = tr.upload("openai", pcm, "en", "Trstenko, Maja",
+                             transport.Deadline(8), None,
+                             lambda a, s: attempts.append((a, s)))
+        finally:
+            builtins.open = real_open
+        report.check("the transcript comes back", text == "set a timer for "
+                     "ten minutes", repr(text))
+        report.check("and nothing was written to disk to get it",
+                     writes == [], str(writes))
+        sent = fake.requests[0]
+        body = sent.raw
+        report.check("it is a multipart upload to the provider's path, with "
+                     "the key in the header and nowhere else",
+                     sent.path == "/v1/audio/transcriptions"
+                     and sent.headers["content-type"].startswith(
+                         "multipart/form-data; boundary=")
+                     and sent.headers["authorization"] == "Bearer "
+                     + FAKE_KEY and FAKE_KEY.encode() not in body)
+        report.check("with the model, the language, the vocabulary and the "
+                     "WAV",
+                     b'name="model"\r\n\r\ngpt-4o-mini-transcribe' in body
+                     and b'name="language"\r\n\r\nen' in body
+                     and b'name="prompt"\r\n\r\nTrstenko, Maja' in body
+                     and b'filename="speech.wav"' in body
+                     and stt.wav_from_pcm(pcm) in body)
+        report.check("the attempt is reported with the seconds of audio",
+                     len(attempts) == 1 and attempts[0][1] == 2.0
+                     and attempts[0][0].status == "ok")
+        row = rig.meter.record(attempts[0][0], "t1", kind="stt",
+                               audio_seconds=attempts[0][1])
+        report.check("and the meter prices it by the minute: two seconds on "
+                     "gpt-4o-mini-transcribe", row["cost_usd_micro"] == 100
+                    , str(row))
+
+        fake.queue(fp.transcript(""))
+        report.check("silence is an empty transcript, not an error",
+                     tr.upload("openai", pcm) == "")
+        fake.queue(fp.transcript("[BLANK_AUDIO]"))
+        report.check("so is what a recogniser says to an empty room",
+                     tr.upload("openai", pcm) == "")
+        before = len(fake.requests)
+        report.check("a click is not sent at all",
+                     tr.upload("openai", b"\x00" * 100) == ""
+                     and len(fake.requests) == before)
+
+        fake.queue(fp.error(401, "invalid_api_key", "bad"))
+        err = _raises(tr.upload, "openai", pcm)
+        report.check("a refused key is an auth error, not retried",
+                     isinstance(err, transport.ProviderError)
+                     and err.kind == "auth"
+                     and len(fake.requests) == before + 1, repr(err))
+        before = len(fake.requests)
+        fake.queue(fp.error(503, "overloaded"), fp.transcript("hello there"))
+        report.check("a 503 is retried once, as for chat",
+                     tr.upload("openai", pcm) == "hello there"
+                     and len(fake.requests) == before + 2)
+        err = _raises(tr.upload, "gemini", pcm)
+        report.check("a provider with no speech service is refused",
+                     isinstance(err, transport.ProviderError)
+                     and err.kind == "bad_request")
+        tr2 = stt.Transcriber(_fake_providers(fake), lambda n: "",
+                              fake.transport)
+        err = _raises(tr2.upload, "openai", pcm)
+        report.check("with no key nothing is sent",
+                     isinstance(err, transport.ProviderError)
+                     and err.kind == "auth")
+
+        gem = Fake("gemini")
+        try:
+            gem.queue(fp.text("what is the time", usage=(70, 5)))
+            words = tr.via_chat(gem.client, "gemini-3.5-flash-lite", pcm)
+            sent = gem.chat_requests()[0].json
+            report.check("a chat model can do the hearing for a provider "
+                         "that cannot: audio in, words out, no tools",
+                         words == "what is the time"
+                         and "tools" not in sent
+                         and sent["messages"][-1]["content"][0]["type"]
+                         == "input_audio"
+                         and "Transcribe" in sent["messages"][0]["content"])
+        finally:
+            gem.close()
+    finally:
+        fake.close()
+        rig.close()
+
+
+def _fake_providers(fake):
+    """A provider table with one row, pointing at the fake."""
+    class One:
+        def get(self, name):
+            if name == "gemini":
+                return table.Provider("gemini", dict(
+                    json.load(open(table.PROVIDERS_FILE, encoding="utf-8"))
+                    ["gemini"]))
+            return fake.provider
+    return One()

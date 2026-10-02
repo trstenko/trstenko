@@ -3647,6 +3647,7 @@ def main(argv=None):
         ("the tool loop: cancelling", asst.scenario_loop_cancel),
         ("the tool loop: every way it can fail", asst.scenario_loop_failures),
         ("the tool loop: audio in the request", asst.scenario_loop_audio),
+        ("speech to text", asst.scenario_stt),
         ("the model client: replies", asst.scenario_provider_replies),
         ("the model client: tool calls", asst.scenario_provider_tools),
         ("the model client: telling failures apart",

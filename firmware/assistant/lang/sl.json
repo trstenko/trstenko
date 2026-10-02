@@ -20,6 +20,7 @@
   "err_timeout": "To je trajalo predolgo. Poskusite znova.",
   "err_generic": "Nekaj je šlo narobe. Poskusite znova.",
   "err_no_key": "Preden lahko odgovorim, potrebujem API ključ. Dodate ga lahko na strani za nastavitve.",
+  "err_no_stt": "Zaenkrat vas ne slišim. Ključ za razpoznavo govora dodate na strani za nastavitve.",
   "err_stuck": "Oprostite, s tem imam težave.",
   "short_version": "To je kratka različica.",
   "budget_warning_month": "Opozorilo: porabili ste 80 odstotkov mesečnega proračuna za umetno inteligenco.",

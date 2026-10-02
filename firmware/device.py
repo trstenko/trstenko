@@ -32,8 +32,16 @@ ERROR_HOLD = 4.0
 
 class Device:
     def __init__(self, hal, pipeline=None, updater=None, ssaa=2,
-                 on_setup=None, on_log=None):
+                 on_setup=None, on_log=None, mono=None, wall=None):
         self.hal = hal
+        # Two clocks, handed in so a test can drive them. `mono` is what
+        # animation, timers and timeouts run on; `wall` is what a reminder
+        # "at six" means, and it is not to be trusted before the clock syncs
+        # (the Pi has no RTC). The default for `mono` is the HAL's own clock,
+        # which is time.monotonic on the board and is what the emulator
+        # already replaces, so nothing that exists today changes behaviour.
+        self.mono = mono or (lambda: self.hal.now())
+        self.wall = wall or time.time
         self.pipeline = pipeline
         self.updater = updater
         self.on_setup = on_setup or (lambda: None)
@@ -54,7 +62,7 @@ class Device:
         self.draw_ms = 0.0
         self._stale = None
 
-        self._started = hal.now()
+        self._started = self.mono()
         self._was_muted = hal.muted()
 
         if self.updater is not None:
@@ -67,7 +75,7 @@ class Device:
     # ---- one frame ----
 
     def tick(self):
-        now = self.hal.now()
+        now = self.mono()
 
         self._events(now)
         self._conversation(now)
@@ -162,7 +170,7 @@ class Device:
 
     def fail(self, text, now=None):
         """Show the error face and say why. The only way into face_error."""
-        now = self.hal.now() if now is None else now
+        now = self.mono() if now is None else now
         self.error_text = text
         self.error_until = now + ERROR_HOLD
         self.log("error: %s" % text)
@@ -215,7 +223,7 @@ class Device:
         broken in the way that matters, and this is what decides whether an
         update is kept or undone.
         """
-        now = self.hal.now() if now is None else now
+        now = self.mono() if now is None else now
         return (self.frames > 30
                 and now - self._started >= self.states["face_boot"].duration
                 and self.face.current != "face_boot")

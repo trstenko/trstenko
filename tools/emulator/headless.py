@@ -28,6 +28,7 @@ from firmware.updates import UpdateConfig, UpdateManager
 from firmware.webui import Auth, UpdateApi
 
 from . import audio as audio_mod
+from .clock import FakeClock
 from .fake_releases import FakeReleases
 from .hal import EmulatedHAL
 from .pipeline import ScriptedPipeline
@@ -1034,11 +1035,51 @@ def scenario_events(report, root):
                   "WorkerDied"} == set(ev.KINDS))
 
 
+def scenario_fake_clock(report, root):
+    """The device on clocks the test moves. No real second passes."""
+    clock = FakeClock(mono=5000.0, wall=1_790_000_000.0, synced=False)
+    hal = EmulatedHAL()
+    hal.now = clock.mono
+    device = Device(hal, ssaa=1, mono=clock.mono, wall=clock.wall)
+
+    real = time.monotonic()
+    for _ in range(int(8.0 * 30)):
+        clock.advance(FRAME)
+        device.tick()
+    report.check("the boot animation runs on the clock it was given",
+                 device.face.current == "face_idle", device.face.current)
+    report.check("and eight simulated seconds took far less real time",
+                 time.monotonic() - real < 6.0)
+
+    before = clock.mono()
+    clock.set_wall(clock.wall() + 3 * 86400)
+    report.check("stepping the date leaves the monotonic clock alone",
+                 clock.mono() == before and device.mono() == before)
+    report.check("and the device sees the new date",
+                 device.wall() == clock.wall())
+    report.check("the clock can say it has not synced", not clock.is_synced())
+    clock.set_synced(True)
+    report.check("and then that it has", clock.is_synced())
+
+    try:
+        clock.advance(-1)
+        refused = False
+    except ValueError:
+        refused = True
+    report.check("time cannot be run backwards by accident", refused)
+
+    plain = Device(EmulatedHAL(), ssaa=1)
+    report.check("with no clocks given the device keeps its old defaults",
+                 abs(plain.wall() - time.time()) < 5
+                 and abs(plain.mono() - plain.hal.now()) < 5)
+
+
 def main(argv=None):
     root = tempfile.mkdtemp(prefix="trstenko-headless-")
     report = Report()
     scenarios = [
         ("the event queue", scenario_events),
+        ("the device on a fake clock", scenario_fake_clock),
         ("boot and a full turn", scenario_boot_and_talk),
         ("the mute switch", scenario_mute),
         ("a turn that fails", scenario_failed_turn),

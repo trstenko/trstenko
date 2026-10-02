@@ -18,8 +18,13 @@ It is the same page, the same endpoints and the same manager the Pi runs.
 """
 
 import argparse
+import os
+import re
+import subprocess
+import threading
 import time
 import tkinter as tk
+import wave
 import webbrowser
 from tkinter import ttk
 
@@ -40,14 +45,73 @@ FPS = 30
 
 BG = "#0b0f12"
 SURFACE = "#151d22"
+SURFACE_HI = "#1c2830"
 LINE = "#243137"
 INK = "#c8d4d8"
 DIM = "#6b7d85"
 TEAL = "#1b7f9b"
 AMBER = "#9b6c1b"
+GREEN = "#2f8f5b"
+RED = "#a84a42"
 
 MONO = ("Consolas", 9)
 MONO_BOLD = ("Consolas", 9, "bold")
+MONO_SMALL = ("Consolas", 8)
+
+# tools/wakeword lives next to this dev tool, not inside it -- WAKE WORD TEST
+# below shells out to its docker-compose pipeline rather than duplicating it.
+WAKEWORD_DIR = os.path.join(os.path.dirname(__file__), "..", "wakeword")
+WAKEWORD_TEST_SECONDS = 2.0
+
+
+def _wakeword_data_dir():
+    """Same rule `tools/wakeword/ui/server.py` uses: read WAKEWORD_DATA_DIR
+    from its .env by hand, since nothing here goes through `docker compose`
+    to get that file loaded automatically."""
+    env_path = os.path.join(WAKEWORD_DIR, ".env")
+    if os.path.isfile(env_path):
+        with open(env_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith("WAKEWORD_DATA_DIR="):
+                    return line.split("=", 1)[1].strip()
+    return os.path.join(WAKEWORD_DIR, "data")
+
+
+def _test_clip_against_model(pcm):
+    """Write `pcm` (16kHz mono 16-bit PCM) to a wav `tools/wakeword`'s train
+    container can see, run it through the exported model via `try_clip.py`,
+    and report whether it triggered.
+
+    Not a live trigger: `pymicro_wakeword`, what the robot actually runs,
+    ships an aarch64-only binary and cannot run on this PC. This uses the
+    same plain-TensorFlow-Lite path `try_clip.py` and `model_train_eval`'s
+    own evaluation already use here instead -- see tools/wakeword/README.md.
+    """
+    data_dir = _wakeword_data_dir()
+    clips_dir = os.path.join(data_dir, "try_clips")
+    os.makedirs(clips_dir, exist_ok=True)
+
+    filename = "emulator_%d.wav" % int(time.time() * 1000)
+    wav_path = os.path.join(clips_dir, filename)
+    with wave.open(wav_path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(pcm)
+
+    proc = subprocess.run(
+        ["docker", "compose", "run", "--rm", "train",
+         "python", "scripts/try_clip.py", "data/try_clips/%s" % filename],
+        cwd=WAKEWORD_DIR, capture_output=True, text=True, timeout=180)
+
+    if proc.returncode != 0:
+        raise RuntimeError(
+            (proc.stderr or proc.stdout or "unknown error").strip()[-500:])
+
+    scores = [float(m) for m in re.findall(r"score=([0-9.]+)", proc.stdout)]
+    triggered = "Triggered at:" in proc.stdout
+    return triggered, (max(scores) if scores else 0.0), proc.stdout
 
 
 class Emulator(tk.Tk):
@@ -124,6 +188,7 @@ class Emulator(tk.Tk):
 
         self._build()
         self._keys()
+        self.resizable(False, False)
         self.protocol("WM_DELETE_WINDOW", self.quit_all)
 
         self.log("emulator up — update page at %s" % self.url)
@@ -133,8 +198,10 @@ class Emulator(tk.Tk):
     # ---- layout ----
 
     def _build(self):
+        self._status_bar()
+
         wrap = tk.Frame(self, bg=BG)
-        wrap.pack(padx=12, pady=12, fill="both", expand=True)
+        wrap.pack(padx=12, pady=(6, 12), fill="both", expand=True)
 
         left = tk.Frame(wrap, bg=BG)
         left.grid(row=0, column=0, sticky="n")
@@ -163,27 +230,81 @@ class Emulator(tk.Tk):
         self._top_face(column_a)
         self._conversation(column_a)
         self._audio(column_a)
+        self._wakeword_test(column_a)
         self._machine(column_b)
         self._updates(column_b)
 
         # The log lives under the panel rather than across the bottom: the
         # left column has 300px of slack and the right one has none, and the
         # window has to fit on a 1080p laptop.
+        log_head = tk.Frame(left, bg=BG)
+        log_head.pack(fill="x", pady=(10, 0))
+        tk.Label(log_head, text="LOG", bg=BG, fg=DIM, font=MONO_BOLD).pack(
+            side="left")
+        self._button(log_head, "clear", self.clear_log, small=True).pack(
+            side="right")
+
         self.logbox = tk.Text(left, height=13, width=1, bg=SURFACE, fg=INK,
                               bd=0, font=MONO, insertbackground=INK,
                               highlightthickness=1, highlightbackground=LINE,
                               wrap="word")
-        self.logbox.pack(fill="both", expand=True, pady=(10, 0))
+        self.logbox.pack(fill="both", expand=True, pady=(4, 0))
         self.logbox.configure(state="disabled")
         left.grid(sticky="nsew")
         wrap.grid_rowconfigure(0, weight=1)
 
+    def _status_bar(self):
+        """One line, always visible, answering "what is it doing right now"
+        without reading the log or hunting through the panel readout."""
+        bar = tk.Frame(self, bg=SURFACE, highlightthickness=1,
+                       highlightbackground=LINE)
+        bar.pack(fill="x", padx=12, pady=(12, 0))
+        inner = tk.Frame(bar, bg=SURFACE)
+        inner.pack(fill="x", padx=10, pady=6)
+
+        self.status_dots = {}
+        for key, label in (("face", "face"), ("mic", "mic"),
+                           ("net", "net"), ("update", "update")):
+            cell = tk.Frame(inner, bg=SURFACE)
+            cell.pack(side="left", padx=(0, 18))
+            dot = tk.Canvas(cell, width=9, height=9, bg=SURFACE,
+                            highlightthickness=0, bd=0)
+            dot.pack(side="left", padx=(0, 6))
+            dot_id = dot.create_oval(1, 1, 8, 8, outline="", fill=DIM)
+            text = tk.Label(cell, text="%s —" % label, bg=SURFACE, fg=INK,
+                            font=MONO)
+            text.pack(side="left")
+            self.status_dots[key] = (dot, dot_id, text)
+
+        tk.Label(inner, text="?  keys: w wake · m mute · n network · "
+                 "u check for updates · t test tone · esc quit",
+                 bg=SURFACE, fg=DIM, font=MONO_SMALL).pack(side="right")
+
     def _section(self, parent, title):
         tk.Label(parent, text=title, bg=BG, fg=DIM, font=MONO_BOLD).pack(
-            anchor="w", pady=(12, 4))
+            anchor="w", pady=(14, 4))
+        rule = tk.Frame(parent, bg=LINE, height=1)
+        rule.pack(anchor="w", fill="x", pady=(0, 6))
         frame = tk.Frame(parent, bg=BG)
         frame.pack(anchor="w", fill="x")
         return frame
+
+    def _button(self, parent, text, command, wide=False, small=False,
+                accent=False):
+        """A flat button that actually looks pressable: it changes colour on
+        hover, not just while held down, and shows a pointing hand."""
+        bg = TEAL if accent else SURFACE
+        b = tk.Button(parent, text=text, anchor="w" if wide else "center",
+                      width=34 if wide else None, relief="flat", bd=0,
+                      bg=bg, fg="#fff" if accent else INK,
+                      activebackground=TEAL, activeforeground="#fff",
+                      font=(MONO_SMALL if small else
+                            (MONO_BOLD if accent else MONO)),
+                      cursor="hand2", command=command)
+        hover = SURFACE_HI if not accent else "#20a0c2"
+        b.bind("<Enter>", lambda e, w=b, c=hover: w.configure(bg=c))
+        b.bind("<Leave>", lambda e, w=b, c=bg: w.configure(bg=c))
+        return b
 
     def _top_face(self, parent):
         frame = self._section(parent, "TOP FACE")
@@ -193,23 +314,24 @@ class Emulator(tk.Tk):
                             ("vol +", VOL_UP)):
             b = tk.Button(row, text=label, width=8, relief="flat", bd=0,
                           bg=SURFACE, fg=INK, activebackground=TEAL,
-                          activeforeground="#fff", font=MONO)
+                          activeforeground="#fff", font=MONO, cursor="hand2")
+            b.bind("<Enter>", lambda e, w=b: w.configure(bg=SURFACE_HI))
+            b.bind("<Leave>", lambda e, w=b: w.configure(bg=SURFACE))
             # Press and release are separate events, because a long press and
             # the two-button setup gesture are both timing, not clicks.
             b.bind("<ButtonPress-1>", lambda e, n=name: self.hal.press(n))
             b.bind("<ButtonRelease-1>", lambda e, n=name: self.hal.release(n))
             b.pack(side="left", padx=(0, 6))
 
-        self._check(frame, "mute switch — cuts the mic's power",
+        self._check(frame, "mute switch — cuts the mic's power (m)",
                     self.muted, self._apply_mute)
         tk.Label(frame, text="hold vol − and vol + together for 3s: setup",
-                 bg=BG, fg=DIM, font=MONO).pack(anchor="w")
+                 bg=BG, fg=DIM, font=MONO_SMALL).pack(anchor="w", pady=(2, 0))
 
     def _conversation(self, parent):
         frame = self._section(parent, "CONVERSATION")
-        tk.Button(frame, text="W   say the wake word", anchor="w", width=34,
-                  relief="flat", bd=0, bg=TEAL, fg="#fff", font=MONO_BOLD,
-                  command=self.wake).pack(anchor="w")
+        self._button(frame, "W   say the wake word", self.wake, wide=True,
+                    accent=True).pack(anchor="w")
         self._check(frame, "make the next turn fail", self.fail_turn,
                     self._apply_fail)
 
@@ -264,14 +386,77 @@ class Emulator(tk.Tk):
         self.out_picker = self._device_picker(
             frame, self.out_device, "output", self._apply_audio_out)
 
-        tk.Button(frame, text="T   play a test tone", anchor="w", width=34,
-                  relief="flat", bd=0, bg=SURFACE, fg=INK, font=MONO,
-                  command=self.test_tone).pack(anchor="w", pady=(4, 0))
+        self._button(frame, "T   play a test tone", self.test_tone,
+                    wide=True).pack(anchor="w", pady=(4, 0))
 
         self.audio_line = tk.Label(frame, text="", bg=BG, fg=DIM,
                                    justify="left", anchor="w", font=MONO,
                                    wraplength=330)
         self.audio_line.pack(anchor="w")
+
+    def _wakeword_test(self, parent):
+        """Record a clip through whichever input is picked above, run it
+        through the trained model, and say whether it would have fired.
+        Not a live trigger -- see `_test_clip_against_model`'s docstring for
+        why -- but the closest thing to "try it" available on this PC."""
+        frame = self._section(parent, "WAKE WORD TEST")
+        tk.Label(frame, text="uses whichever input is picked under AUDIO",
+                 bg=BG, fg=DIM, font=MONO_SMALL).pack(anchor="w")
+        self.wakeword_test_btn = self._button(
+            frame, "record %gs and test" % WAKEWORD_TEST_SECONDS,
+            self.run_wakeword_test, wide=True)
+        self.wakeword_test_btn.pack(anchor="w", pady=(4, 0))
+        self.wakeword_test_line = tk.Label(
+            frame, text="", bg=BG, fg=DIM, justify="left", anchor="w",
+            font=MONO, wraplength=330)
+        self.wakeword_test_line.pack(anchor="w", pady=(4, 0))
+
+    def run_wakeword_test(self):
+        if getattr(self, "_wakeword_test_running", False):
+            return
+        self._wakeword_test_running = True
+        self.wakeword_test_btn.configure(state="disabled")
+        self.wakeword_test_line.configure(
+            text="recording %gs -- say it now" % WAKEWORD_TEST_SECONDS,
+            fg=INK)
+        self.audio.start_recording()
+        self.after(int(WAKEWORD_TEST_SECONDS * 1000),
+                   self._finish_wakeword_recording)
+
+    def _finish_wakeword_recording(self):
+        pcm = self.audio.stop_recording()
+        self.wakeword_test_line.configure(
+            text="running model (docker compose run, a few seconds)...",
+            fg=INK)
+        threading.Thread(target=self._run_wakeword_model, args=(pcm,),
+                         daemon=True).start()
+
+    def _run_wakeword_model(self, pcm):
+        try:
+            triggered, max_score, stdout = _test_clip_against_model(pcm)
+            result = ("ok", triggered, max_score, stdout)
+        except Exception as exc:
+            result = ("error", str(exc))
+        self.after(0, self._show_wakeword_result, result)
+
+    def _show_wakeword_result(self, result):
+        self.wakeword_test_btn.configure(state="normal")
+        self._wakeword_test_running = False
+        if result[0] == "error":
+            self.wakeword_test_line.configure(
+                text="error: %s" % result[1], fg=AMBER)
+            self.log("wake word test failed: %s" % result[1])
+            return
+        _, triggered, max_score, stdout = result
+        if triggered:
+            self.wakeword_test_line.configure(
+                text="TRIGGERED (peak score %.2f)" % max_score, fg=GREEN)
+        else:
+            self.wakeword_test_line.configure(
+                text="no trigger (peak score %.2f)" % max_score, fg=RED)
+        last_line = next((l for l in reversed(stdout.strip().splitlines())
+                          if l.strip()), "(no output)")
+        self.log("wake word test: %s" % last_line)
 
     def _machine(self, parent):
         frame = self._section(parent, "MACHINE")
@@ -284,7 +469,7 @@ class Emulator(tk.Tk):
                  command=self._apply_free).pack(side="left")
         tk.Label(row, text="MB", bg=BG, fg=DIM, font=MONO).pack(side="left")
 
-        self._check(frame, "network up", self.online, self._apply_system)
+        self._check(frame, "network up (n)", self.online, self._apply_system)
         self._check(frame, "connection is metered", self.metered,
                     self._apply_system)
         self._check(frame, "board reports under-voltage", self.undervolt,
@@ -326,24 +511,20 @@ class Emulator(tk.Tk):
 
         buttons = tk.Frame(frame, bg=BG)
         buttons.pack(anchor="w", pady=(6, 0))
-        for label, command in (("check now", self.check_now),
+        for label, command in (("check now (u)", self.check_now),
                                ("approve", self.updater.approve),
                                ("install", self.install_now),
                                ("restart", self.restart_now),
                                ("defer", self.updater.defer),
                                ("cancel", self.updater.cancel)):
-            tk.Button(buttons, text=label, relief="flat", bd=0, bg=SURFACE,
-                      fg=INK, activebackground=TEAL, activeforeground="#fff",
-                      font=MONO, command=command).pack(side="left",
-                                                       padx=(0, 6))
+            self._button(buttons, label, command, small=True).pack(
+                side="left", padx=(0, 6), pady=(0, 4))
 
         self._check(frame, "restart into it by itself", self.auto_restart,
                     lambda: None)
 
-        tk.Button(frame, text="open the update page", anchor="w", width=34,
-                  relief="flat", bd=0, bg=SURFACE, fg=INK, font=MONO,
-                  command=lambda: webbrowser.open(self.url)).pack(
-            anchor="w", pady=(6, 0))
+        self._button(frame, "open the update page", lambda: webbrowser.open(
+            self.url), wide=True).pack(anchor="w", pady=(6, 0))
 
         self.update_line = tk.Label(frame, text="", bg=BG, fg=INK,
                                     justify="left", anchor="w", font=MONO,
@@ -580,6 +761,7 @@ class Emulator(tk.Tk):
         self._audio_readout()
 
         status = self.updater.status()
+        self._status_readout(turn, status)
         line = "state    %s" % status["state"]
         if status["release"]:
             line += "   %s (%s)" % (status["release"]["version"],
@@ -601,6 +783,26 @@ class Emulator(tk.Tk):
             line += "\n%s" % status["error"]
         self.update_line.configure(
             text=line, fg=AMBER if status["error"] else INK)
+
+    def _status_readout(self, turn, status):
+        self._dot("face", turn.stage if turn else "idle",
+                  GREEN if turn else DIM)
+        muted = self.hal.muted()
+        self._dot("mic", "muted" if muted else "live",
+                  RED if muted else GREEN)
+        online = self.hal.system.is_online
+        self._dot("net", "online" if online else "offline",
+                  GREEN if online else RED)
+        state = status["state"]
+        colour = RED if status["error"] else (
+            AMBER if state not in ("idle", "up_to_date") else GREEN)
+        self._dot("update", state, colour)
+
+    def _dot(self, key, text, colour):
+        dot, dot_id, label = self.status_dots[key]
+        dot.itemconfigure(dot_id, fill=colour)
+        base = label.cget("text").split(" ", 1)[0]
+        label.configure(text="%s %s" % (base, text))
 
     def _audio_readout(self):
         status = self.audio.status()
@@ -662,6 +864,13 @@ class Emulator(tk.Tk):
             self.logbox.insert("end", "%s  %s\n" % (stamp, line))
         self.logbox.see("end")
         self.logbox.configure(state="disabled")
+
+    def clear_log(self):
+        self.logbox.configure(state="normal")
+        self.logbox.delete("1.0", "end")
+        self.logbox.configure(state="disabled")
+        self._last_log = None
+        self._last_log_count = 0
 
     def quit_all(self):
         self.audio.close()

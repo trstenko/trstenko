@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Trstenko — record</title>
+<style>
+  :root {
+    --bg: #0b0f12; --surface: #151d22; --line: #243137;
+    --ink: #c8d4d8; --dim: #6b7d85; --teal: #1b7f9b;
+    --amber: #9b6c1b; --green: #2f8f5b; --red: #a84a42;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    background: var(--bg); color: var(--ink); margin: 0;
+    padding: 20px 16px 40px; font: 15px/1.5 -apple-system, Consolas, sans-serif;
+    min-height: 100vh;
+  }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  .sub { color: var(--dim); font-size: 13px; margin-bottom: 20px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px; margin-bottom: 14px;
+  }
+  label { color: var(--dim); font-size: 12px; display: block; margin-bottom: 6px; }
+  input[type="text"] {
+    background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 6px; padding: 10px; font: inherit; width: 100%;
+  }
+  .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+  .tab {
+    flex: 1; text-align: center; padding: 14px 8px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--surface); cursor: pointer;
+  }
+  .tab.active { border-color: var(--teal); background: rgba(27,127,155,0.15); }
+  .tab .t { font-size: 14px; }
+  .tab .d { font-size: 11px; color: var(--dim); margin-top: 2px; }
+  #record-btn {
+    display: block; width: 100%; padding: 26px; font-size: 18px; font-weight: 600;
+    border-radius: 10px; border: 1px solid var(--line); background: var(--surface);
+    color: var(--ink); cursor: pointer;
+  }
+  #record-btn.recording { background: rgba(168,74,66,0.25); border-color: var(--red); color: var(--red); }
+  #record-btn:disabled { opacity: 0.5; }
+  #status { margin-top: 14px; min-height: 20px; font-size: 13px; color: var(--dim); }
+  #status.ok { color: var(--green); }
+  #status.bad { color: var(--red); }
+  #count { font-size: 13px; color: var(--dim); margin-top: 4px; }
+  .hint { font-size: 12px; color: var(--dim); margin-top: 10px; }
+  button.small {
+    background: var(--surface); color: var(--dim); border: 1px solid var(--line);
+    border-radius: 6px; padding: 8px 10px; font: inherit; font-size: 12px; margin-top: 8px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Trstenko — real recordings</h1>
+<div class="sub">Recordings land on the PC for review, not saved automatically. Nothing is kept here.</div>
+
+<div id="gate" class="card" style="display:none;">
+  <label>Token (shown on the PC dashboard)</label>
+  <input type="text" id="token-input" autocapitalize="off" autocorrect="off" spellcheck="false">
+  <button class="small" id="token-save">Save</button>
+</div>
+
+<div id="app" style="display:none;">
+  <div class="tabs">
+    <div class="tab active" data-cat="positive_real">
+      <div class="t">Say "Trstenko"</div>
+      <div class="d">one clear take</div>
+    </div>
+    <div class="tab" data-cat="negative_real">
+      <div class="t">Ambient</div>
+      <div class="d">room background</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <label>Your name (optional, helps sort takes)</label>
+    <input type="text" id="label-input" autocapitalize="words">
+  </div>
+
+  <button id="record-btn">Tap to record</button>
+  <div id="status"></div>
+  <div id="count">Uploaded this session: 0</div>
+
+  <div class="hint" id="hint">
+    Tap, say "Trstenko" once at normal volume, tap again to stop and send.
+    Repeat a handful of times, varying distance and tone.
+  </div>
+
+  <button class="small" id="change-token">change token</button>
+</div>
+
+<script>
+const $ = (sel) => document.querySelector(sel);
+
+const HINTS = {
+  positive_real: 'Tap, say "Trstenko" once at normal volume, tap again to stop and send. ' +
+    'Repeat a handful of times, varying distance and tone.',
+  negative_real: 'Tap, then leave the phone recording room background for 30–60 seconds ' +
+    '— TV, talking, appliances, silence. Tap again to stop and send. ' +
+    'Keep the screen ON and this tab in front the whole time — most phones mute the ' +
+    'mic the moment the screen locks or you switch apps, so the file comes out the right ' +
+    'length but silent partway through.',
+};
+
+let category = 'positive_real';
+let uploadCount = 0;
+
+function getToken() { return localStorage.getItem('trstenko_token') || ''; }
+function setToken(t) { localStorage.setItem('trstenko_token', t); }
+function getLabel() { return localStorage.getItem('trstenko_label') || ''; }
+function setLabel(l) { localStorage.setItem('trstenko_label', l); }
+
+function showGate() {
+  $('#gate').style.display = 'block';
+  $('#app').style.display = 'none';
+}
+function showApp() {
+  $('#gate').style.display = 'none';
+  $('#app').style.display = 'block';
+  $('#label-input').value = getLabel();
+}
+
+$('#token-save').addEventListener('click', () => {
+  const v = $('#token-input').value.trim();
+  if (v) { setToken(v); showApp(); }
+});
+$('#change-token').addEventListener('click', () => {
+  $('#token-input').value = getToken();
+  showGate();
+});
+$('#label-input').addEventListener('input', (e) => setLabel(e.target.value));
+
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    category = tab.dataset.cat;
+    $('#hint').textContent = HINTS[category];
+  });
+});
+
+if (getToken()) { showApp(); } else { showGate(); }
+
+// --- recording ---
+
+function downsampleBuffer(buffer, srcRate, outRate) {
+  if (outRate === srcRate) return buffer;
+  const ratio = srcRate / outRate;
+  const newLength = Math.round(buffer.length / ratio);
+  const result = new Float32Array(newLength);
+  let offsetResult = 0;
+  let offsetBuffer = 0;
+  while (offsetResult < newLength) {
+    const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+    let accum = 0, count = 0;
+    for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+      accum += buffer[i];
+      count++;
+    }
+    result[offsetResult] = count ? accum / count : 0;
+    offsetResult++;
+    offsetBuffer = nextOffsetBuffer;
+  }
+  return result;
+}
+
+function encodeWAV(samples, sampleRate) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  function writeString(offset, str) {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  }
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeString(36, 'data');
+  view.setUint32(40, samples.length * 2, true);
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Blob([view], { type: 'audio/wav' });
+}
+
+let audioCtx = null, source = null, processor = null, stream = null;
+let chunks = [];
+let recording = false;
+let wentHiddenWhileRecording = false;
+let timerHandle = null;
+let recordStartedAt = 0;
+
+document.addEventListener('visibilitychange', () => {
+  if (recording && document.hidden) {
+    wentHiddenWhileRecording = true;
+  }
+});
+
+async function startRecording() {
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+  });
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  source = audioCtx.createMediaStreamSource(stream);
+  processor = audioCtx.createScriptProcessor(4096, 1, 1);
+  chunks = [];
+  processor.onaudioprocess = (e) => {
+    chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  };
+  const silentSink = audioCtx.createGain();
+  silentSink.gain.value = 0;
+  source.connect(processor);
+  processor.connect(silentSink);
+  silentSink.connect(audioCtx.destination);
+  recording = true;
+  wentHiddenWhileRecording = false;
+  recordStartedAt = Date.now();
+  timerHandle = setInterval(() => {
+    const secs = ((Date.now() - recordStartedAt) / 1000).toFixed(1);
+    btn.textContent = 'Recording... ' + secs + 's — tap to stop';
+  }, 200);
+}
+
+async function stopRecording() {
+  recording = false;
+  clearInterval(timerHandle);
+  const hidden = wentHiddenWhileRecording;
+  const sr = audioCtx.sampleRate;
+  processor.disconnect();
+  source.disconnect();
+  stream.getTracks().forEach(t => t.stop());
+  await audioCtx.close();
+  if (hidden) {
+    throw new Error(
+      'screen locked or app switched mid-recording — this take is almost certainly ' +
+      'silent partway through. Discarded, not uploaded. Try again with the screen kept on.'
+    );
+  }
+
+  let total = 0;
+  for (const c of chunks) total += c.length;
+  const merged = new Float32Array(total);
+  let off = 0;
+  for (const c of chunks) { merged.set(c, off); off += c.length; }
+
+  const down = downsampleBuffer(merged, sr, 16000);
+  return encodeWAV(down, 16000);
+}
+
+async function upload(blob) {
+  const form = new FormData();
+  form.append('category', category);
+  form.append('label', getLabel());
+  form.append('token', getToken());
+  form.append('audio', blob, 'clip.wav');
+  const r = await fetch('/api/record/upload', { method: 'POST', body: form });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || 'upload failed');
+  return j;
+}
+
+const btn = $('#record-btn');
+const status = $('#status');
+
+btn.addEventListener('click', async () => {
+  if (!getToken()) { showGate(); return; }
+
+  if (!recording) {
+    btn.disabled = true;
+    status.className = ''; status.textContent = 'requesting microphone...';
+    try {
+      await startRecording();
+      btn.classList.add('recording');
+      btn.textContent = 'Recording... tap to stop';
+      status.textContent = '';
+    } catch (err) {
+      status.className = 'bad';
+      status.textContent = 'mic error: ' + err.message;
+    }
+    btn.disabled = false;
+  } else {
+    btn.disabled = true;
+    btn.classList.remove('recording');
+    btn.textContent = 'Uploading...';
+    status.className = ''; status.textContent = 'processing...';
+    try {
+      const blob = await stopRecording();
+      status.textContent = 'uploading...';
+      const meta = await upload(blob);
+      uploadCount++;
+      $('#count').textContent = 'Uploaded this session: ' + uploadCount;
+      status.className = 'ok';
+      status.textContent = 'saved (' + meta.duration + 's) — waiting for review on PC';
+    } catch (err) {
+      status.className = 'bad';
+      status.textContent = 'error: ' + err.message;
+    }
+    btn.textContent = 'Tap to record';
+    btn.disabled = false;
+  }
+});
+</script>
+
+</body>
+</html>

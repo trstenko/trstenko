@@ -14,3 +14,14 @@ pyalsaaudio>=0.10
 
 # The setup QR code on the panel.
 qrcode>=7.4
+
+# Wake word. Both engines install here because the competition unit and a
+# sold unit are the same image with a config flag -- see
+# docs/research/software-stack.md and firmware/wakeword/ for which one a
+# given build actually uses.
+# - pvporcupine: competition demo only. Free tier is personal/non-commercial;
+#   never the engine behind a unit that gets sold.
+# - pymicro-wakeword: Apache-2.0, free per unit, what ships. Needs a trained
+#   "Trstenko" model from tools/wakeword/ -- there is no bundled one here.
+pvporcupine>=3.0
+pymicro-wakeword>=2.0

@@ -8,3 +8,9 @@
 # without it the audio backends refuse with an install line and the level
 # slider keeps working, so the rest of the emulator is unaffected.
 sounddevice>=0.4
+
+# wakeword/ui's phone-recording page needs an HTTPS dev server -- phone
+# browsers refuse microphone access over plain http:// to any address other
+# than localhost, so the dashboard serves itself over a self-signed cert
+# (Flask's `ssl_context="adhoc"`, which needs this package).
+cryptography>=42

@@ -13,6 +13,7 @@ This is the check to run after touching the updater or the device loop.
 """
 
 import io
+import logging
 import os
 import shutil
 import sys
@@ -1074,12 +1075,356 @@ def scenario_fake_clock(report, root):
                  and abs(plain.mono() - plain.hal.now()) < 5)
 
 
+class Clocked:
+    """A bare Device on a FakeClock: no updater, no pipeline, nothing that
+    needs real time, so a test can run minutes of device in a blink."""
+
+    def __init__(self, **kw):
+        self.clock = FakeClock()
+        self.hal = EmulatedHAL()
+        self.hal.now = self.clock.mono
+        self.logs = []
+        self.device = Device(self.hal, ssaa=1, mono=self.clock.mono,
+                             wall=self.clock.wall, on_log=self.logs.append,
+                             **kw)
+
+    def step(self, seconds):
+        for _ in range(int(round(seconds / FRAME))):
+            self.clock.advance(FRAME)
+            self.device.tick()
+
+
+class quiet_logs:
+    """A step that raises on purpose logs a traceback; keep it out of the
+    scenario output."""
+
+    def __enter__(self):
+        logging.disable(logging.CRITICAL)
+
+    def __exit__(self, *exc):
+        logging.disable(logging.NOTSET)
+
+
+def scenario_frame_rates(report, root):
+    from firmware.device import FPS_ACTIVE, FPS_IDLE, FPS_SCREEN_OFF
+
+    rig = Clocked()
+    rig.step(0.2)
+    report.check("the boot animation runs at the full rate",
+                 abs(rig.device.frame_interval() - 1 / FPS_ACTIVE) < 1e-9)
+
+    rig.step(6.0)
+    report.check("a settled idle face drops to 10Hz",
+                 rig.device.face.current == "face_idle"
+                 and abs(rig.device.frame_interval() - 1 / FPS_IDLE) < 1e-9,
+                 "%.3f" % rig.device.frame_interval())
+
+    rig.hal.set_mute(True)
+    rig.step(1.0)
+    report.check("the muted face is as still as idle, so 10Hz too",
+                 rig.device.face.current == "face_muted"
+                 and abs(rig.device.frame_interval() - 1 / FPS_IDLE) < 1e-9)
+    rig.hal.set_mute(False)
+    rig.step(1.0)
+
+    rig.device.fail("test", rig.clock.mono())
+    report.check("an error brings the full rate back",
+                 abs(rig.device.frame_interval() - 1 / FPS_ACTIVE) < 1e-9)
+    rig.step(5.0)
+
+    rig.device.sleep_screen()
+    report.check("screen off is 2Hz",
+                 abs(rig.device.frame_interval() - 1 / FPS_SCREEN_OFF) < 1e-9)
+    report.check("and the backlight really is off",
+                 rig.hal.panel.backlight_level == 0.0)
+
+    frames = rig.device.frames
+    rig.step(2.0)
+    report.check("a dark screen is not drawn", rig.device.frames == frames)
+
+    rig.hal.press(VOL_UP)
+    rig.step(0.2)
+    rig.hal.release(VOL_UP)
+    rig.step(0.2)
+    report.check("a button press wakes the screen",
+                 not rig.device.screen_off
+                 and rig.hal.panel.backlight_level == 1.0)
+
+    # A turn must be seen at 30Hz even from a cold start.
+    pipeline = ScriptedPipeline(rig.hal.speaker, seed=3)
+    rig.device.pipeline = pipeline
+    pipeline.trigger()
+    rig.step(0.5)
+    report.check("a turn runs at the full rate",
+                 rig.device.turn is not None
+                 and abs(rig.device.frame_interval() - 1 / FPS_ACTIVE) < 1e-9)
+
+    sleepy = Clocked(screen_sleep_after=60.0)
+    sleepy.step(30.0)
+    report.check("the screen stays on before its idle time is up",
+                 not sleepy.device.screen_off)
+    sleepy.step(40.0)
+    report.check("and sleeps after it", sleepy.device.screen_off)
+
+    never = Clocked()
+    never.step(120.0)
+    report.check("with no sleep time set the screen never sleeps",
+                 not never.device.screen_off)
+
+
+def scenario_loop_wakes_on_events(report, root):
+    """Waiting on the inbox, not sleeping: an event has to be handled within a
+    frame, at every frame rate, or a reminder at 2Hz would be late for no
+    reason."""
+    for label, screen_off in (("idle", False), ("screen off", True)):
+        hal = EmulatedHAL()
+        device = Device(hal, ssaa=1)
+        seen = []
+        device.on(ev.WAKE_WORD, lambda e: seen.append(time.monotonic()))
+        if screen_off:
+            device.sleep_screen()
+        thread = threading.Thread(target=device.run, daemon=True)
+        thread.start()
+        # Long enough that the loop is deep in a wait, not mid-frame.
+        time.sleep(0.8 if label == "idle" else 0.3)
+
+        start = time.monotonic()
+        device.events.post(ev.Event(ev.WAKE_WORD))
+        deadline = start + 2.0
+        while not seen and time.monotonic() < deadline:
+            time.sleep(0.001)
+        late = (seen[0] - start) if seen else 9.9
+        report.check("an event is handled within a frame (%s)" % label,
+                     late < 0.08, "%.0f ms" % (late * 1000))
+
+        device.stop()
+        device.events.post(ev.Event("Wake"))
+        thread.join(2.0)
+        report.check("the loop stops when asked (%s)" % label,
+                     not thread.is_alive())
+
+
+def scenario_step_failures(report, root):
+    healthy = Clocked()
+    healthy.step(8.0)
+    report.check("a device with nothing failing is healthy",
+                 healthy.device.healthy() and not healthy.device.failing())
+
+    rig = Clocked()
+
+    def broken(now):
+        raise RuntimeError("scheduler fell over")
+
+    rig.device.add_step("scheduler", broken)
+    with quiet_logs():
+        rig.step(8.0)
+
+    device = rig.device
+    report.check("a failing step does not stop the face",
+                 device.face.current == "face_idle" and device.frames > 200,
+                 "%s, %d frames" % (device.face.current, device.frames))
+    report.check("its failures are counted",
+                 device.faults["scheduler"] == device.ticks,
+                 str(device.faults))
+    report.check("healthy() goes false when a step fails every tick",
+                 not device.healthy() and device.failing() == ["scheduler"])
+    report.check("and the page can see which one",
+                 device.summary()["failing"] == ["scheduler"])
+
+    flaky = Clocked()
+    calls = []
+
+    def sometimes(now):
+        calls.append(now)
+        if len(calls) % 5 == 0:
+            raise RuntimeError("once in a while")
+
+    flaky.device.add_step("flaky", sometimes)
+    with quiet_logs():
+        flaky.step(8.0)
+    report.check("a step that only fails now and then is not unhealthy",
+                 flaky.device.healthy() and flaky.device.faults["flaky"] > 0)
+
+    recovers = Clocked()
+    state = {"broken": True}
+
+    def mends(now):
+        if state["broken"]:
+            raise RuntimeError("not yet")
+
+    recovers.device.add_step("mends", mends)
+    with quiet_logs():
+        recovers.step(8.0)
+        state["broken"] = False
+        recovers.step(0.5)
+    report.check("and one that recovers stops counting against the release",
+                 recovers.device.healthy())
+
+    slow = Clocked()
+    seen = []
+    slow.device.add_step("housekeeping", lambda now: seen.append(now),
+                         every=1.0)
+    slow.step(10.0)
+    report.check("a step with an interval runs once per interval",
+                 8 <= len(seen) <= 11, str(len(seen)))
+
+
+def scenario_commands(report, root):
+    rig = Clocked()
+    device = rig.device
+
+    cmd = ev.Command("set_volume", 0.35)
+    device.events.post(cmd)
+    report.check("a command waits for the main thread",
+                 not cmd.answered)
+    rig.step(0.1)
+    report.check("set_volume is applied and answered",
+                 cmd.answered and cmd.result == {"volume": 0.35}
+                 and abs(rig.hal.speaker.get_volume() - 0.35) < 1e-9,
+                 str(cmd.result))
+
+    for bad in (1.5, -0.1, "loud", None, True):
+        cmd = ev.Command("set_volume", bad)
+        device.events.post(cmd)
+        rig.step(0.1)
+        report.check("volume %r is refused with a reason" % (bad,),
+                     cmd.error and "volume" in cmd.error, str(cmd.error))
+    report.check("a refused volume leaves it where it was",
+                 abs(rig.hal.speaker.get_volume() - 0.35) < 1e-9)
+
+    cmd = ev.Command("make_coffee")
+    device.events.post(cmd)
+    rig.step(0.1)
+    report.check("an unknown command is refused by name",
+                 cmd.error and "make_coffee" in cmd.error, str(cmd.error))
+
+    cmd = ev.Command("settings.update", {"volume": 0.2})
+    device.events.post(cmd)
+    rig.step(0.1)
+    report.check("settings.update is a stub until settings exist",
+                 cmd.answered and cmd.error)
+
+    def explode(args):
+        raise ZeroDivisionError("a bug")
+
+    device.command("explode", explode)
+    cmd = ev.Command("explode")
+    device.events.post(cmd)
+    with quiet_logs():
+        rig.step(0.1)
+    report.check("a bug in a command is an answer, not a dead loop",
+                 cmd.error == "the device could not do that"
+                 and device.faults["commands"] == 1)
+
+    cmd = ev.Command("set_volume", 0.5)
+    device.events.post(cmd)
+    rig.step(0.1)
+    report.check("and the loop is still serving commands",
+                 cmd.result == {"volume": 0.5})
+
+    for _ in range(120):
+        device.events.post(ev.Event(ev.SENTENCE))
+    heard = []
+    device.on(ev.SENTENCE, lambda e: heard.append(e))
+    device.tick()
+    report.check("one tick handles at most 50 events",
+                 len(heard) == 50 and len(device.events) == 70,
+                 "%d, %d left" % (len(heard), len(device.events)))
+    device.tick()
+    device.tick()
+    report.check("the rest follow on the next frames", len(heard) == 120)
+
+    device.on(ev.TTS_DIED, lambda e: 1 / 0)
+    device.on(ev.TTS_DIED, lambda e: heard.append("second"))
+    device.events.post(ev.Event(ev.TTS_DIED))
+    with quiet_logs():
+        device.tick()
+    report.check("a handler that raises does not stop the next one",
+                 "second" in heard and device.faults["events"] == 1)
+
+    device.events.post(ev.Event(ev.SHUTDOWN))
+    rig.step(0.1)
+    report.check("a Shutdown event stops the loop", not device.running)
+
+
+def scenario_worker_restarts(report, root):
+    rig = Clocked()
+    device = rig.device
+    starts = []
+    device.supervisor.add("audio", lambda: starts.append(rig.clock.mono()),
+                          rig.clock.mono())
+    report.check("a worker is started when it is added", len(starts) == 1)
+
+    def die():
+        device.events.post(ev.Event(ev.WORKER_DIED, data="audio"))
+        rig.step(0.1)
+
+    die()
+    report.check("a death does not restart it at once", len(starts) == 1)
+    rig.step(1.2)
+    report.check("it comes back after one second", len(starts) == 2,
+                 str(len(starts)))
+
+    die()
+    rig.step(3.0)
+    report.check("the second wait is longer", len(starts) == 2)
+    rig.step(3.0)
+    report.check("five seconds", len(starts) == 3, str(len(starts)))
+
+    die()
+    rig.step(20.0)
+    report.check("the third wait is longer still", len(starts) == 3)
+    rig.step(11.0)
+    report.check("thirty seconds", len(starts) == 4, str(len(starts)))
+
+    die()
+    rig.step(120.0)
+    report.check("after that it is left off", len(starts) == 4)
+    report.check("and the page can say which service is down",
+                 device.supervisor.down() == ["audio"]
+                 and device.summary()["workers"]["audio"]["state"] == "down")
+    report.check("a missing worker does not make the release unhealthy",
+                 device.healthy())
+
+    steady = Clocked()
+    runs = []
+    steady.device.supervisor.add("tts", lambda: runs.append(1),
+                                 steady.clock.mono())
+    for _ in range(6):
+        steady.step(200.0)
+        steady.device.events.post(ev.Event(ev.WORKER_DIED, data="tts"))
+        steady.step(2.0)
+    report.check("a worker that ran for minutes between deaths is not given up on",
+                 len(runs) == 7 and not steady.device.supervisor.down(),
+                 str(len(runs)))
+
+    stubborn = Clocked()
+    attempts = []
+
+    def wont_start():
+        attempts.append(1)
+        if len(attempts) > 1:
+            raise OSError("no sound card")
+
+    stubborn.device.supervisor.add("audio", wont_start, stubborn.clock.mono())
+    stubborn.device.events.post(ev.Event(ev.WORKER_DIED, data="audio"))
+    stubborn.step(60.0)
+    report.check("a worker that cannot even start ends up off, not looping",
+                 stubborn.device.supervisor.down() == ["audio"]
+                 and len(attempts) <= 5, str(len(attempts)))
+
+
 def main(argv=None):
     root = tempfile.mkdtemp(prefix="trstenko-headless-")
     report = Report()
     scenarios = [
         ("the event queue", scenario_events),
         ("the device on a fake clock", scenario_fake_clock),
+        ("frame rates", scenario_frame_rates),
+        ("the loop wakes on events", scenario_loop_wakes_on_events),
+        ("a step that fails", scenario_step_failures),
+        ("commands and the inbox", scenario_commands),
+        ("restarting a dead worker", scenario_worker_restarts),
         ("boot and a full turn", scenario_boot_and_talk),
         ("the mute switch", scenario_mute),
         ("a turn that fails", scenario_failed_turn),

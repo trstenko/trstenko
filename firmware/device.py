@@ -1,29 +1,53 @@
 """The device: one loop, one face, one conversation at a time.
 
     device = Device(hal, pipeline, updater)
-    while device.running:
-        device.tick()
+    device.run()
 
 Everything that can block -- the model call, a download, speech synthesis --
 happens on a thread somewhere below this and is polled here. `tick` draws a
 frame and returns, which is what keeps the face at 30Hz while a five-second
 round trip is in flight.
 
+This is the conductor. Only this thread changes device state; every other
+thread posts an `Event` or sends a `Command` (firmware/events.py) and this one
+acts on it during its next tick (plan 01). A tick is a list of steps, and each
+runs inside its own `try`: an exception in the scheduler must not stop the
+face or the mute switch. A step that fails on every tick makes `healthy()`
+false, which is what lets the update trial undo a release that is drawing a
+face and doing nothing else.
+
 The face is a consequence, never a command. Nothing calls `set("face_error")`;
 things fail, and `_face_for` works out what the device looks like. That is why
 muting mid-sentence cannot leave a talking face on screen.
 """
 
+import logging
 import time
 
+from . import events as ev
 from . import pipeline as pipeline_mod
 from .face import states as state_defs
 from .face.controller import FaceController
 from .face.renderer import FaceRenderer
 from .hal import ButtonDecoder, LONG, POWER, SETUP_COMBO, SHORT, VOL_DOWN, VOL_UP
+from .supervisor import Supervisor
 
-TARGET_FPS = 30
+log = logging.getLogger("trstenko.device")
+
+# The three frame rates of plan 01. The idle face only blinks and breathes, so
+# drawing it 30 times a second spends heat on nothing; with the screen off
+# only events and the scheduler matter, and events end the wait early anyway.
+FPS_ACTIVE = 30
+FPS_IDLE = 10
+FPS_SCREEN_OFF = 2
+TARGET_FPS = FPS_ACTIVE
+IDLE_FACES = ("face_idle", "face_muted")
+
 VOLUME_STEP = 0.1
+
+# A step that raises on this many ticks in a row is broken rather than
+# unlucky. About a second at 30Hz.
+FAULT_LIMIT = 30
 
 # How long the error face stays up after a failed turn. Long enough to read as
 # an answer to what just happened, short enough that the device does not sulk.
@@ -32,7 +56,8 @@ ERROR_HOLD = 4.0
 
 class Device:
     def __init__(self, hal, pipeline=None, updater=None, ssaa=2,
-                 on_setup=None, on_log=None, mono=None, wall=None):
+                 on_setup=None, on_log=None, mono=None, wall=None,
+                 events=None, screen_sleep_after=None):
         self.hal = hal
         # Two clocks, handed in so a test can drive them. `mono` is what
         # animation, timers and timeouts run on; `wall` is what a reminder
@@ -42,6 +67,12 @@ class Device:
         # already replaces, so nothing that exists today changes behaviour.
         self.mono = mono or (lambda: self.hal.now())
         self.wall = wall or time.time
+
+        # The one inbox. Services are handed this to post to.
+        self.events = events or ev.EventQueue()
+        self.supervisor = Supervisor(log=lambda line: self.log(line))
+        self._handlers = {}
+        self._commands = {}
         self.pipeline = pipeline
         self.updater = updater
         self.on_setup = on_setup or (lambda: None)
@@ -59,11 +90,36 @@ class Device:
         self.error_text = ""
         self.setup_mode = False
         self.frames = 0
+        self.ticks = 0
         self.draw_ms = 0.0
         self._stale = None
 
         self._started = self.mono()
         self._was_muted = hal.muted()
+
+        # Screen sleep is off unless the settings turn it on, so a device
+        # never goes dark on someone who has not asked for it.
+        self.screen_off = False
+        self.screen_sleep_after = screen_sleep_after
+        self._last_activity = self._started
+
+        self.faults = {}
+        self._streak = {}
+        self._steps = []
+        self._due = {}
+        self.add_step("events", self._drain_events)
+        self.add_step("input", self._input)
+        self.add_step("conversation", self._conversation)
+        self.add_step("workers", self.supervisor.tick)
+        self.add_step("updater", self._updater)
+        self.add_step("screen", self._screen)
+        self.add_step("draw", self._draw_frame)
+
+        self.on(ev.SHUTDOWN, lambda event: self.stop())
+        self.on(ev.WORKER_DIED,
+                lambda event: self.supervisor.died(event.data, self.mono()))
+        self.command("set_volume", self._cmd_set_volume)
+        self.command("settings.update", self._cmd_settings_unavailable)
 
         if self.updater is not None:
             self.updater.set_busy_hint(lambda: self.turn is not None)
@@ -74,31 +130,156 @@ class Device:
 
     # ---- one frame ----
 
+    def add_step(self, name, fn, every=0.0, before="draw"):
+        """Put a step in the tick, ahead of the drawing. `every` is a minimum
+        number of seconds between runs, for the housekeeping that does not
+        need a frame's worth of attention (plan 01, step 6)."""
+        entry = (name, fn, every)
+        for i, (existing, _, _) in enumerate(self._steps):
+            if existing == before:
+                self._steps.insert(i, entry)
+                break
+        else:
+            self._steps.append(entry)
+        self.faults.setdefault(name, 0)
+        self._streak.setdefault(name, 0)
+
     def tick(self):
         now = self.mono()
+        self.ticks += 1
+        for name, step, every in self._steps:
+            if every and now < self._due.get(name, 0.0):
+                continue
+            self._due[name] = now + every
+            try:
+                step(now)
+                self._streak[name] = 0
+            except Exception:
+                self.faults[name] += 1
+                self._streak[name] += 1
+                log.exception("tick step %s failed", name)
 
-        self._events(now)
-        self._conversation(now)
-        if self.updater is not None:
-            self.updater.trial_tick(self.healthy(now), now)
-            self.updater.tick()
-
-        self._draw(now)
-        self.frames += 1
-
-    def run(self, fps=TARGET_FPS):
-        period = 1.0 / fps
+    def run(self):
         while self.running:
             start = time.monotonic()
             self.tick()
-            slack = period - (time.monotonic() - start)
-            if slack > 0:
-                time.sleep(slack)
+            # Wait on the inbox rather than sleeping: a wake word or a web
+            # request ends the wait at once, whatever the frame rate.
+            self.events.wait(max(0.0, self.frame_interval()
+                                 - (time.monotonic() - start)))
+
+    def frame_interval(self):
+        """30Hz while anything moves, 10Hz for the settled idle face, 2Hz with
+        the screen off."""
+        if self.screen_off:
+            return 1.0 / FPS_SCREEN_OFF
+        now = self.mono()
+        moving = (self.turn is not None
+                  or now < self.error_until
+                  or self.face.progress(now) < 1.0
+                  or self.face.current not in IDLE_FACES)
+        return 1.0 / (FPS_ACTIVE if moving else FPS_IDLE)
+
+    # ---- events and commands ----
+
+    def on(self, kind, fn):
+        """Run `fn(event)` on the main thread whenever `kind` arrives."""
+        self._handlers.setdefault(kind, []).append(fn)
+
+    def command(self, name, fn):
+        """`fn(args)` runs on the main thread. Return the reply, or raise
+        `CommandError` with a sentence for the person who asked."""
+        self._commands[name] = fn
+
+    def _drain_events(self, now):
+        failed = None
+        for item in self.events.drain(ev.DRAIN_LIMIT):
+            if isinstance(item, ev.Command):
+                self._run_command(item)
+                continue
+            for fn in self._handlers.get(item.kind, ()):
+                try:
+                    fn(item)
+                except Exception as exc:
+                    # The rest of the batch still gets handled.
+                    log.exception("handler for %s failed", item.kind)
+                    failed = failed or exc
+        if failed is not None:
+            raise failed
+
+    def _run_command(self, cmd):
+        fn = self._commands.get(cmd.name)
+        if fn is None:
+            cmd.fail("unknown command: %s" % cmd.name)
+            return
+        try:
+            cmd.reply(fn(cmd.args))
+        except ev.CommandError as exc:
+            cmd.fail(str(exc))
+        except Exception:
+            # Ours, not the caller's: count it, keep the detail in the log
+            # and give the page something it can show.
+            self.faults["commands"] = self.faults.get("commands", 0) + 1
+            log.exception("command %s failed", cmd.name)
+            cmd.fail("the device could not do that")
+
+    def _cmd_set_volume(self, level):
+        if isinstance(level, dict):
+            level = level.get("level")
+        if isinstance(level, bool) or not isinstance(level, (int, float)):
+            raise ev.CommandError("volume must be a number from 0 to 1")
+        if not 0.0 <= level <= 1.0:
+            raise ev.CommandError("volume must be between 0 and 1")
+        self._set_volume(float(level))
+        return {"volume": self.hal.speaker.get_volume()}
+
+    def _cmd_settings_unavailable(self, patch):
+        raise ev.CommandError("settings cannot be changed yet")
+
+    def _set_volume(self, level):
+        level = max(0.0, min(1.0, level))
+        self.hal.speaker.set_volume(level)
+        self.log("volume %d%%" % round(level * 100))
+
+    # ---- the updater ----
+
+    def _updater(self, now):
+        if self.updater is None:
+            return
+        self.updater.trial_tick(self.healthy(now), now)
+        self.updater.tick()
+
+    # ---- the screen ----
+
+    def wake_screen(self, now=None):
+        """Anything a person did, or anything that needs their eyes."""
+        self._last_activity = self.mono() if now is None else now
+        if self.screen_off:
+            self.screen_off = False
+            self.hal.panel.backlight(1.0)
+            # The panel kept whatever it showed; send the whole face again.
+            self._stale = (0, 0, self.hal.panel.width, self.hal.panel.height)
+            self.log("screen on")
+
+    def sleep_screen(self):
+        if not self.screen_off:
+            self.screen_off = True
+            self.hal.panel.backlight(0.0)
+            self.log("screen off")
+
+    def _screen(self, now):
+        busy = self.turn is not None or now < self.error_until
+        if busy:
+            self.wake_screen(now)
+        elif (self.screen_sleep_after is not None and not self.screen_off
+              and now - self._last_activity >= self.screen_sleep_after):
+            self.sleep_screen()
 
     # ---- input ----
 
-    def _events(self, now):
+    def _input(self, now):
         for event in self.buttons.feed(self.hal.poll(), now):
+            self.wake_screen(now)
             self._button(event, now)
 
         muted = self.hal.muted()
@@ -133,9 +314,7 @@ class Device:
             return
         if event.name in (VOL_DOWN, VOL_UP):
             step = VOLUME_STEP if event.name == VOL_UP else -VOLUME_STEP
-            level = max(0.0, min(1.0, self.hal.speaker.get_volume() + step))
-            self.hal.speaker.set_volume(level)
-            self.log("volume %d%%" % round(level * 100))
+            self._set_volume(self.hal.speaker.get_volume() + step)
 
     # ---- the conversation ----
 
@@ -192,6 +371,12 @@ class Device:
             return "face_boot"
         return "face_idle"
 
+    def _draw_frame(self, now):
+        if self.screen_off:
+            return
+        self._draw(now)
+        self.frames += 1
+
     def _draw(self, now):
         want = self._face_for(now)
         if want != self.face.current:
@@ -226,7 +411,13 @@ class Device:
         now = self.mono() if now is None else now
         return (self.frames > 30
                 and now - self._started >= self.states["face_boot"].duration
-                and self.face.current != "face_boot")
+                and self.face.current != "face_boot"
+                and not self.failing())
+
+    def failing(self):
+        """Steps that have raised on every one of their last several runs."""
+        return sorted(name for name, n in self._streak.items()
+                      if n >= FAULT_LIMIT)
 
     def log(self, line):
         self.on_log(line)
@@ -253,6 +444,9 @@ class Device:
             "busy": self.turn is not None,
             "setup_mode": self.setup_mode,
             "draw_ms": round(self.draw_ms, 2),
+            "screen_off": self.screen_off,
+            "failing": self.failing(),
+            "workers": self.supervisor.status(),
         }
 
 

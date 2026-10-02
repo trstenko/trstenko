@@ -81,6 +81,14 @@ def build(hal, config=None, notifier=None, on_log=None):
                     db=db, settings=settings, secrets=secrets)
     device.add_closer("storage", db.close)
     wire_scheduler(device)
+    try:
+        from .assistant.wiring import wire_assistant
+
+        wire_assistant(device, hal, config.data_root)
+    except Exception:
+        # A device that cannot hear or speak still has a face, a mute switch
+        # and reminders, and says so on the page.
+        log.exception("the assistant could not start")
     if notifier is not None:
         # A step of the main loop, so a stalled loop stops pinging.
         device.add_step("watchdog", lambda now: notifier.watchdog(),

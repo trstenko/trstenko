@@ -274,8 +274,24 @@ class Meter:
     # ---- before a request ----
 
     def estimate_input(self, messages, tools=None, audio_seconds=0.0):
-        """A cheap count of what a request will send, for the worst case."""
-        chars = len(json.dumps(messages, ensure_ascii=False))
+        """A cheap count of what a request will send, for the worst case.
+        Audio inside a message is counted by its length in seconds, as the
+        provider counts it, and not by the size of its base64: that would make
+        five seconds of speech look like fifty thousand tokens."""
+        stripped = []
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, list):
+                parts = []
+                for part in content:
+                    if isinstance(part, dict) and                             part.get("type") == "input_audio":
+                        data = part.get("input_audio", {}).get("data", "")
+                        audio_seconds += len(data) * 3 / 4 / 32000.0
+                        part = {"type": "input_audio"}
+                    parts.append(part)
+                message = dict(message, content=parts)
+            stripped.append(message)
+        chars = len(json.dumps(stripped, ensure_ascii=False))
         if tools:
             chars += len(json.dumps(tools, ensure_ascii=False))
         return estimate_tokens(chars) + int(audio_seconds

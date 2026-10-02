@@ -11,6 +11,7 @@ import collections
 import copy
 import json
 import logging
+import os
 import threading
 import time
 
@@ -231,7 +232,7 @@ class Fake:
         with open(table.PROVIDERS_FILE, encoding="utf-8") as fh:
             row = json.load(fh)[name]
         self.server = fp.FakeProvider()
-        row["base_url"] = self.server.start()
+        row["base_url"] = self.base_url = self.server.start()
         row["allow_http"] = True
         if mutate:
             mutate(row)
@@ -4158,3 +4159,549 @@ def scenario_bridge_threads(report, root):
     report.check("and in threaded mode the audio thread takes audio itself, "
                  "so the window's pump reads nothing",
                  sum(got) > 0 and source.total >= sum(got) * 1)
+
+
+# ---- the whole assistant, on a device (plan 03, plan 08) ----
+
+class FakeAudio:
+    """Stands in for the audio thread: records what main asks of it, and lets a
+    scenario hand back a recording."""
+
+    def __init__(self):
+        self.state = "waiting"
+        self.false_wakes = 0
+        self.captures = []
+        self.aborts = 0
+        self.started = 0
+        self.closed = False
+
+    def begin_capture(self, turn_id, followup=False):
+        self.captures.append({"id": turn_id, "followup": followup})
+
+    def abort(self):
+        self.aborts += 1
+
+    def start(self):
+        self.started += 1
+
+    def close(self):
+        self.closed = True
+
+
+class AssistantRig:
+    """A device with every part of the assistant, against the fake provider and
+    the fake Piper, on a thread that ticks it as the robot's main loop does."""
+
+    def __init__(self, root, name, provider="gemini", fakes=("gemini",),
+                 key=True, patch=None, piper_extra=(), voice=True):
+        import sys
+
+        from firmware import events as ev
+        from firmware.assistant import tts as tts_mod
+        from firmware.assistant import voices as voices_mod
+        from firmware.assistant import wiring
+        from firmware.storage.secrets import Secrets, default_path
+
+        from .headless import Pump, SchedRig
+
+        self.ev = ev
+        settings = {"assistant": {"provider": provider}}
+        for section, body in (patch or {}).items():
+            settings.setdefault(section, {}).update(body)
+        self.sched = SchedRig(root, name, settings_patch=settings)
+        self.device = self.sched.device
+        self.clock = self.sched.clock
+        self.secrets = Secrets.load(default_path(self.sched.data))
+        if key:
+            for n in fakes:
+                self.secrets.set_key(n, FAKE_KEY)
+        self.device.secrets = self.secrets
+
+        self.fakes = {n: Fake(n) for n in fakes}
+        with open(table.PROVIDERS_FILE, encoding="utf-8") as fh:
+            rows = json.load(fh)
+        for n, fake in self.fakes.items():
+            rows[n]["base_url"] = fake.base_url
+            rows[n]["allow_http"] = True
+        providers = table.Providers(rows)
+
+        folder = voices_mod.voices_dir(self.sched.data)
+        os.makedirs(folder, exist_ok=True)
+        registry = voices_mod.VoiceRegistry.load()
+        if voice:
+            for vid in registry.ids():
+                for path in registry.get(vid).files(folder):
+                    open(path, "wb").close()
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "fake_piper.py")
+        self.synth = tts_mod.PiperSynthesizer(
+            self.device.hal.speaker, self.device.events.post,
+            command=[sys.executable], script=script, extra=piper_extra)
+        self.audio = FakeAudio()
+        self.assistant = wiring.wire_assistant(
+            self.device, self.device.hal, self.sched.data, synth=self.synth,
+            audio=self.audio, providers=providers)
+        self.pump = Pump(self.device)
+        self.stages = []
+        self._watch = threading.Event()
+        self._sampler = threading.Thread(target=self._sample, daemon=True)
+        self.pump.__enter__()
+        self._sampler.start()
+
+    @property
+    def fake(self):
+        return next(iter(self.fakes.values()))
+
+    def _sample(self):
+        last = None
+        while not self._watch.is_set():
+            turn = self.device.turn
+            stage = turn.stage if turn is not None else None
+            if stage != last:
+                self.stages.append(stage)
+                last = stage
+            time.sleep(0.002)
+
+    def wait(self, condition, seconds=10.0):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if condition():
+                return True
+            time.sleep(0.01)
+        return False
+
+    def ask(self, name, args=None):
+        cmd = self.ev.Command(name, args)
+        self.device.events.post(cmd)
+        return cmd.wait(2.0)
+
+    def wake(self):
+        self.assistant.pipeline.trigger()
+        return self.wait(lambda: self.device.turn is not None, 5.0)
+
+    def hear(self, pcm=None, reason="speech", turn_id=None):
+        """The audio thread hands back a recording for the capture main asked
+        for."""
+        capture = self.audio.captures[-1]
+        self.device.events.post(self.ev.Event(self.ev.SPEECH_ENDED, data={
+            "turn_id": turn_id or capture["id"],
+            "pcm": _speech_pcm(1.0) if pcm is None else pcm,
+            "reason": reason}))
+
+    def finished(self, seconds=15.0):
+        return self.wait(lambda: self.device.turn is None, seconds)
+
+    def plays(self):
+        return self.sched.plays
+
+    def close(self):
+        self._watch.set()
+        self.pump.__exit__(None, None, None)
+        self.sched.close()
+        for fake in self.fakes.values():
+            fake.close()
+
+
+def scenario_assistant_turn(report, root):
+    from firmware import pipeline as pipe
+
+    rig = AssistantRig(root, "asst1")
+    try:
+        status = rig.device.summary()["assistant"]
+        report.check("the assistant is attached, and says it is ready",
+                     status["ready"] and status["provider"] == "gemini"
+                     and status["stt"] == "chat" and status["alerts"] == [],
+                     str(status))
+        report.check("the commands the page will use exist",
+                     "month" in rig.ask("usage.summary")
+                     and "ready" in rig.ask("assistant.status")
+                     and "memories" in rig.ask("memories.list"))
+
+        fake = rig.fake
+        fake.queue(fp.text("<heard>what is the time</heard>It is ten past "
+                           "six.", pieces=4, usage=(300, 15)))
+        report.check("the wake word starts a turn, listening",
+                     rig.wake() and rig.device.turn.stage == pipe.LISTENING
+                     and rig.audio.captures[-1] == {"id": "t1.1",
+                                                    "followup": False})
+        rig.hear()
+        report.check("a whole turn runs to the end by itself",
+                     rig.finished(), str(rig.stages))
+        report.check("through the stages, in order",
+                     [s for s in rig.stages if s is not None]
+                     == [pipe.LISTENING, pipe.THINKING, pipe.SPEAKING,
+                         pipe.DONE][:len([s for s in rig.stages
+                                          if s is not None])]
+                     and pipe.THINKING in rig.stages
+                     and pipe.SPEAKING in rig.stages, str(rig.stages))
+        report.check("and the reply was spoken, as audio of the right "
+                     "length",
+                     len(rig.plays()) == 1
+                     and rig.plays()[0][1] == _pcm_bytes("It is ten past six."),
+                     str(rig.plays()))
+        sent = fake.chat_requests()[0].json["messages"]
+        report.check("the model was sent the audio, with the prompt's rules",
+                     sent[-1]["content"][0]["type"] == "input_audio"
+                     and "You are Trstenko" in sent[0]["content"])
+        report.check("the request was counted, and its tokens",
+                     rig.assistant.meter.requests_day == 1
+                     and rig.assistant.meter.summary()["turns_today"] == 1)
+        report.check("the exchange is kept, as words",
+                     rig.assistant.session.start_turn()[0]
+                     == {"role": "user", "content": "what is the time"})
+        report.check("no words are in the status or the journal",
+                     "ten past" not in json.dumps(rig.ask(
+                         "assistant.status")))
+        report.check("the face went back to idle",
+                     rig.wait(lambda: rig.device.face.current
+                              in ("face_idle", "face_boot")))
+
+        rig.stages.clear()
+        fake.clear()
+        fake.queue(fp.text("First one here. Second one follows. Third one "
+                           "ends.", pieces=6, gap=0.25))
+        rig.sched.plays.clear()
+        rig.wake()
+        rig.hear()
+        started = time.monotonic()
+        rig.wait(lambda: rig.plays(), 8)
+        first_audio = time.monotonic() - started
+        rig.finished()
+        report.check("the first sentence is being spoken before the model has "
+                     "finished the third (%.2fs of about 1.5s)" % first_audio,
+                     first_audio < 1.2 and len(rig.plays()) == 3,
+                     "%.2f %d" % (first_audio, len(rig.plays())))
+
+        fake.clear()
+        rig.sched.plays.clear()
+        before = len(fake.requests)
+        rig.wake()
+        rig.hear(reason="silence", pcm=b"")
+        report.check("a false wake ends quietly: no request, no sound",
+                     rig.finished() and len(fake.requests) == before
+                     and rig.plays() == [])
+
+        fake.queue(fp.text("<heard>set it</heard>Which day?", usage=(300, 5)))
+        rig.sched.plays.clear()
+        rig.wake()
+        rig.hear()
+        rig.wait(lambda: len(rig.audio.captures) >= 3
+                 and rig.audio.captures[-1]["followup"], 8)
+        capture = rig.audio.captures[-1]
+        report.check("a reply that ends in a question opens a follow-up "
+                     "window with no wake word, in the same conversation",
+                     capture["followup"] and capture["id"].endswith(".2")
+                     and rig.device.turn is not None
+                     and rig.device.turn.stage == pipe.LISTENING, str(capture))
+        fake.queue(fp.text("<heard>tomorrow</heard>Done.", usage=(300, 5)))
+        rig.hear()
+        report.check("and the answer is a second exchange, then it is over",
+                     rig.finished() and len(rig.plays()) == 2)
+
+        fake.queue(fp.text("Is it?", usage=(300, 5)))
+        rig.wake()
+        rig.hear()
+        rig.wait(lambda: rig.audio.captures[-1]["followup"]
+                 and rig.audio.captures[-1]["id"].startswith("t4"), 8)
+        rig.hear(reason="silence", pcm=b"")
+        report.check("a follow-up nobody answers ends the turn with no error",
+                     rig.finished())
+    finally:
+        rig.close()
+
+    rig = AssistantRig(root, "asst2", key=False)
+    try:
+        rig.wake()
+        rig.hear()
+        rig.finished()
+        rig.wait(lambda: rig.plays(), 5)
+        report.check("with no key the owner hears to add one, and nothing is "
+                     "sent",
+                     len(rig.plays()) == 1 and rig.fake.requests == [],
+                     str(rig.plays()))
+        status = rig.device.summary()["assistant"]
+        report.check("and the page is told why",
+                     any(a["kind"] == "no_key" for a in status["alerts"]),
+                     str(status["alerts"]))
+    finally:
+        rig.close()
+
+    rig = AssistantRig(root, "asst3", voice=False)
+    try:
+        status = rig.device.summary()["assistant"]
+        report.check("with no voice installed the device still boots, and "
+                     "says so",
+                     any(a["kind"] == "no_voice" for a in status["alerts"])
+                     and not status["ready"], str(status["alerts"]))
+        rig.fake.queue(fp.text("Hello.", usage=(300, 5)))
+        rig.wake()
+        rig.hear()
+        report.check("and a turn still ends, instead of waiting for a voice "
+                     "that is not there", rig.finished(20))
+    finally:
+        rig.close()
+
+
+def scenario_assistant_commands(report, root):
+    rig = AssistantRig(root, "asstcmd", provider="openai", fakes=("openai",))
+    try:
+        fake = rig.fake
+        report.check("an OpenAI owner hears through an upload",
+                     rig.ask("assistant.status")["stt"] == "upload")
+        fake.queue(fp.transcript("set a timer for ten minutes"))
+        rig.wake()
+        rig.hear()
+        rig.finished()
+        report.check("a local command makes no chat request: one upload, "
+                     "then the timer, spoken",
+                     fake.chat_requests() == []
+                     and len([r for r in fake.requests
+                              if "transcriptions" in r.path]) == 1
+                     and len(rig.plays()) == 1
+                     and len(rig.sched.scheduler.list("pending")) == 1,
+                     str((len(fake.requests), rig.plays())))
+        stt_rows = rig.assistant.meter.summary()
+        report.check("the upload was counted as speech to text",
+                     rig.assistant.meter.requests_day == 1)
+
+        fake.queue(fp.transcript("volume up"))
+        rig.sched.plays.clear()
+        rig.wake()
+        rig.hear()
+        rig.finished()
+        report.check("volume up changes the volume, with no model",
+                     abs(rig.device.hal.speaker.get_volume() - 0.7) < 1e-9
+                     and fake.chat_requests() == [])
+
+        fake.queue(fp.transcript("what do you think about jazz"),
+                   fp.text("I like it.", usage=(300, 5)))
+        rig.sched.plays.clear()
+        rig.wake()
+        rig.hear()
+        rig.finished()
+        report.check("anything else goes to the model, with the words",
+                     len(fake.chat_requests()) == 1
+                     and fake.chat_requests()[0].json["messages"][-1]
+                     == {"role": "user",
+                         "content": "what do you think about jazz"}
+                     and len(rig.plays()) == 1)
+
+        fake.queue(fp.transcript("[BLANK_AUDIO]"))
+        before = len(fake.chat_requests())
+        rig.sched.plays.clear()
+        rig.wake()
+        rig.hear()
+        report.check("a transcript that is only noise ends quietly",
+                     rig.finished() and rig.plays() == []
+                     and len(fake.chat_requests()) == before)
+
+        # The acknowledgement window, by voice.
+        rig.ask("reminders.add", {"seconds": 5, "text": "tea"})
+
+        def step():
+            rig.clock.advance(0.25)
+            return rig.device.announcer.in_window
+
+        rig.clock.advance(5.5)
+        rig.wait(step, 20)
+        rig.wait(lambda: any(c["id"].startswith("ack-")
+                             for c in rig.audio.captures), 5)
+        armed = [c for c in rig.audio.captures if c["id"].startswith("ack-")]
+        report.check("while it rings, the device listens without a wake word",
+                     bool(armed) and armed[-1]["followup"], str(
+                         rig.audio.captures))
+        fake.queue(fp.transcript("okay"))
+        rig.hear(turn_id=armed[-1]["id"])
+        report.check("and 'okay' acknowledges it",
+                     rig.wait(lambda: rig.device.announcer.current is None,
+                              10))
+        report.check("without ever starting a conversation",
+                     fake.chat_requests() == [] or len(
+                         fake.chat_requests()) == 1)
+    finally:
+        rig.close()
+
+
+def scenario_assistant_cancel(report, root):
+    from firmware import pipeline as pipe
+
+    rig = AssistantRig(root, "asstcan")
+    try:
+        fake = rig.fake
+        fake.queue(fp.calls(("set_timer", {"seconds": 600}),
+                            say="<heard>timer</heard>", first_byte_delay=1.5))
+        rig.wake()
+        rig.hear()
+        rig.wait(lambda: rig.device.turn.stage == pipe.THINKING, 5)
+        started = time.monotonic()
+        rig.device.hal.set_mute(True)
+        report.check("the mute switch ends a turn that is waiting for the "
+                     "model", rig.finished(2.0))
+        took = time.monotonic() - started
+        time.sleep(0.3)
+        report.check("the worker gives up at once, not when the model "
+                     "answers: no timer, no sound",
+                     rig.sched.scheduler.list("pending") == []
+                     and rig.plays() == []
+                     and rig.assistant.worker.busy() is False, "%.2f" % took)
+        report.check("the audio thread was told to stop recording",
+                     rig.audio.aborts >= 1)
+        rig.device.events.post(rig.ev.Event(rig.ev.SENTENCE, data={
+            "turn_id": "t1.1", "text": "A ghost from a cancelled turn."}))
+        time.sleep(0.4)
+        report.check("a late sentence from a cancelled turn is not spoken",
+                     rig.plays() == [])
+        rig.device.hal.set_mute(False)
+        time.sleep(0.2)
+
+        fake.clear()
+        fake.queue(fp.text("Back again.", usage=(300, 3)))
+        rig.wake()
+        rig.hear()
+        report.check("and the next turn works", rig.finished()
+                     and len(rig.plays()) == 1)
+
+        fake.clear()
+        fake.queue(fp.text("One. Two. Three. Four. Five. Six. Seven.",
+                           pieces=7, gap=0.3))
+        rig.sched.plays.clear()
+        rig.wake()
+        rig.hear()
+        rig.wait(lambda: rig.plays(), 8)
+        rig.device.hal.set_mute(True)
+        report.check("muted while speaking: the speech stops at once",
+                     rig.finished(2.0)
+                     and not rig.device.hal.speaker.is_playing())
+        count = len(rig.plays())
+        time.sleep(0.8)
+        report.check("and nothing more is said", len(rig.plays()) == count)
+        rig.device.hal.set_mute(False)
+    finally:
+        rig.close()
+
+    rig = AssistantRig(root, "asstshut")
+    try:
+        rig.fake.queue(fp.text("late", first_byte_delay=3.0))
+        rig.wake()
+        rig.hear()
+        rig.wait(lambda: rig.device.turn.stage == pipe.THINKING, 5)
+        started = time.monotonic()
+        rig.pump.__exit__(None, None, None)
+        rig.device.close()
+        report.check("shutting down with a turn in flight does not hang: "
+                     "%.1fs" % (time.monotonic() - started),
+                     time.monotonic() - started < 6)
+        rows = rig.sched.db.conn().execute(
+            "SELECT COUNT(*) FROM usage").fetchone()[0] \
+            if not rig.sched.db.closed else -1
+        report.check("the worker and the speech thread are stopped",
+                     not rig.assistant.worker._thread.is_alive()
+                     and rig.assistant.tts.status()["state"] == "stopped")
+    finally:
+        rig.pump = type("P", (), {"__exit__": lambda *a: None})()
+        rig.close()
+
+
+def scenario_assistant_failures(report, root):
+    rig = AssistantRig(root, "asstfail")
+    try:
+        fake = rig.fake
+
+        def run(behaviour, key=None):
+            fake.clear()
+            rig.assistant.meter.clear()
+            rig.sched.plays.clear()
+            rig.clock.advance(5)          # the error face of the last turn
+            fake.queue(*behaviour)
+            rig.wake()
+            rig.hear()
+            rig.finished()
+            rig.wait(lambda: rig.plays(), 5)
+            time.sleep(0.1)
+
+        run([fp.error(401, "invalid_api_key", "bad")])
+        report.check("a refused key is spoken, and the error face is up",
+                     len(rig.plays()) == 1
+                     and rig.device.face.current in ("face_error",
+                                                     "face_talking")
+                     or rig.wait(lambda: rig.device.face.current
+                                 == "face_error", 2), str(rig.plays()))
+        run([fp.error(429, "insufficient_quota", "no credit")])
+        report.check("out of credit is spoken", len(rig.plays()) == 1)
+        run([fp.error(429, "rate_limit_exceeded", retry_after=30)])
+        report.check("a rate limit is spoken", len(rig.plays()) == 1)
+        before = len(fake.requests)
+        rig.sched.plays.clear()
+        rig.clock.advance(5)
+        rig.wake()
+        rig.hear()
+        rig.finished()
+        rig.wait(lambda: rig.plays(), 5)
+        report.check("and while it lasts the next turn does not even ask: it "
+                     "says busy at once",
+                     len(rig.plays()) == 1 and len(fake.requests) == before)
+        rig.assistant.meter.clear()
+        run([fp.error(500), fp.error(500)])
+        report.check("a server error twice is spoken", len(rig.plays()) == 1)
+        rig.settings = rig.device.settings
+        rig.device.settings.data["budget"]["monthly_usd"] = 0.0
+        run([fp.text("never asked")])
+        report.check("a spent budget is spoken, and nothing is sent",
+                     len(rig.plays()) == 1 and fake.requests == [])
+        rig.device.settings.data["budget"]["monthly_usd"] = 5.0
+    finally:
+        rig.close()
+
+    rig = AssistantRig(root, "asstdie", piper_extra=["die_after=1"])
+    try:
+        fake = rig.fake
+        fake.queue(fp.text("<heard>a</heard>One.", usage=(300, 3)),
+                   fp.text("<heard>b</heard>Two.", usage=(300, 3)))
+        rig.wake()
+        rig.hear()
+        rig.finished()
+        rig.wake()
+        rig.hear()
+        rig.finished()
+        report.check("when Piper dies the turn ends, in the error state, "
+                     "rather than waiting for sound",
+                     rig.wait(lambda: rig.assistant.tts.status()["state"]
+                              == "down", 5))
+        status = rig.device.supervisor.status()
+        report.check("and the supervisor has it down for restarting",
+                     status["tts"]["state"] == "waiting", str(status))
+        rig.assistant.tts.extra = []
+        rig.clock.advance(1.5)
+        report.check("which it does, after a second",
+                     rig.wait(lambda: rig.device.supervisor.status()
+                              ["tts"]["state"] == "running"
+                              and rig.assistant.tts.state in ("ready",
+                                                              "starting"), 5))
+    finally:
+        rig.close()
+
+    rig = AssistantRig(root, "asstfb", provider="openai",
+                       fakes=("openai", "gemini"),
+                       patch={"assistant": {"fallback_provider": "gemini"}})
+    try:
+        primary, second = rig.fakes["openai"], rig.fakes["gemini"]
+        primary.queue(fp.transcript("tell me a joke"),
+                      fp.error(429, "rate_limit_exceeded", retry_after=30))
+        second.queue(fp.text("A joke, from the second key.", usage=(300, 5)))
+        rig.wake()
+        rig.hear()
+        rig.finished()
+        sent = second.chat_requests()
+        report.check("a rate-limited primary: the same turn is answered by "
+                     "the second key, with the same words",
+                     len(sent) == 1 and sent[0].json["messages"][-1]
+                     == {"role": "user", "content": "tell me a joke"}
+                     and len(rig.plays()) == 1, str(rig.plays()))
+        report.check("the fallback is counted for the page, and both "
+                     "requests are in the usage",
+                     rig.assistant.meter.summary()["fallbacks_today"] == 1
+                     and rig.assistant.meter.requests_day >= 3)
+        report.check("the turn counts once, not twice",
+                     rig.assistant.meter.summary()["turns_today"] == 1)
+    finally:
+        rig.close()

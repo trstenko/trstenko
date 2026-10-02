@@ -60,6 +60,9 @@ class EnergyVad:
     def reset(self):
         pass
 
+    def set_cutoff(self, value):
+        pass
+
 
 class MicroVad:
     """micro-wake-word's VAD model. Raises on construction if it cannot run, so
@@ -90,6 +93,9 @@ class MicroVad:
         self._recent = []
         self._model.reset()
         self._features.reset()
+
+    def set_cutoff(self, value):
+        self.cutoff = float(value)
 
     def close(self):
         self._model.close()
@@ -124,6 +130,9 @@ class SafeVad:
         except Exception:
             self.failed = True
         self._fallback.reset()
+
+    def set_cutoff(self, value):
+        self._primary.set_cutoff(value)
 
 
 def open_vad(cutoff=0.3, directory=MODELS):

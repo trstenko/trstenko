@@ -132,6 +132,10 @@ class Announcer:
         self._hold_until = 0.0
         self._was_busy = False
 
+    def set_say(self, say):
+        """Where spoken lines go. The synthesizer, once there is one."""
+        self._say = say
+
     # ---- what the conductor asks ----
 
     @property

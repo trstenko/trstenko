@@ -65,7 +65,8 @@ class TurnInput:
 
     def __init__(self, system, history, user, tool_ctx, provider, model,
                  max_output, turn_id, session_id="", transcript="",
-                 audio_in=False, lang="en", max_steps=MAX_STEPS):
+                 audio_in=False, lang="en", max_steps=MAX_STEPS,
+                 count_turn=True):
         self.system = system
         self.history = history
         self.user = user
@@ -79,6 +80,9 @@ class TurnInput:
         self.audio_in = audio_in
         self.lang = lang
         self.max_steps = max(1, min(int(max_steps), 8))
+        # False when the same turn is tried again on the fallback provider:
+        # it is one question, however many keys it takes.
+        self.count_turn = count_turn
 
 
 class TurnResult:
@@ -186,10 +190,11 @@ class Loop:
             if heard.transcript:
                 result.transcript = heard.transcript
 
-        verdict = self.meter.begin_turn(turn.turn_id)
-        if not verdict.ok:
-            result.refused = verdict.reason
-            return result
+        if turn.count_turn:
+            verdict = self.meter.begin_turn(turn.turn_id)
+            if not verdict.ok:
+                result.refused = verdict.reason
+                return result
 
         messages = [{"role": "system", "content": turn.system}]
         messages.extend(turn.history)

@@ -110,6 +110,9 @@ class Device:
         self.on_log = on_log or (lambda line: None)
         self._closers = []
         self._closed = False
+        # Subsystems that have something to say on the page's Home screen
+        # (the assistant, for one), as {name: callable returning a dict}.
+        self.status_extra = {}
 
         self.states = state_defs.build()
         self.renderer = FaceRenderer(ssaa=ssaa)
@@ -745,10 +748,15 @@ class Device:
     def stop(self):
         self.running = False
 
-    def add_closer(self, name, fn):
+    def add_closer(self, name, fn, first=False):
         """Something to do on the way out, such as flushing and closing the
-        database. They run in the order they were added."""
-        self._closers.append((name, fn))
+        database. They run in the order they were added; `first` puts one
+        ahead of the rest, for what has to be written before the database is
+        closed."""
+        if first:
+            self._closers.insert(0, (name, fn))
+        else:
+            self._closers.append((name, fn))
 
     def close(self):
         """The shutdown sequence (plan 01): cancel the turn, stop the audio and
@@ -800,6 +808,7 @@ class Device:
                           if self.scheduler is not None else None),
             "announcing": (self.announcer.summary()
                            if self.announcer is not None else None),
+            **{name: fn() for name, fn in self.status_extra.items()},
         }
 
 

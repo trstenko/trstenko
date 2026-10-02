@@ -6,7 +6,15 @@ After=network.target trstenko-bootcheck.service sound.target
 Requires=trstenko-bootcheck.service
 
 [Service]
-Type=simple
+# The firmware says READY=1 once it is up and then WATCHDOG=1 about once a
+# second from its main loop (firmware/sdnotify.py). If the loop wedges for 20s
+# the process is alive and useless, which Restart=always cannot see; the
+# watchdog turns it into a restart, and the start limit below turns a release
+# that keeps wedging into a rollback. NotifyAccess=main so that nothing the
+# firmware spawns, such as Piper, can answer for it.
+Type=notify
+WatchdogSec=20
+NotifyAccess=main
 WorkingDirectory=/opt/trstenko/current
 ExecStart=/opt/trstenko/current/venv/bin/python -m firmware.main
 Environment=TRSTENKO_ROOT=/opt/trstenko

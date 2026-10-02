@@ -76,7 +76,10 @@ class Device:
         self.pipeline = pipeline
         self.updater = updater
         self.on_setup = on_setup or (lambda: None)
+        self._has_callback = on_log is not None
         self.on_log = on_log or (lambda line: None)
+        self._closers = []
+        self._closed = False
 
         self.states = state_defs.build()
         self.renderer = FaceRenderer(ssaa=ssaa)
@@ -420,16 +423,48 @@ class Device:
                       if n >= FAULT_LIMIT)
 
     def log(self, line):
-        self.on_log(line)
+        # Both places: the callback is what the emulator window shows, and the
+        # logger is what the journal gets. `via_callback` stops a handler that
+        # feeds the same callback from showing the line twice.
+        if self._has_callback:
+            self.on_log(line)
+        log.info("%s", line, extra={"via_callback": self._has_callback})
 
     def stop(self):
         self.running = False
 
+    def add_closer(self, name, fn):
+        """Something to do on the way out, such as flushing and closing the
+        database. They run in the order they were added."""
+        self._closers.append((name, fn))
+
     def close(self):
+        """The shutdown sequence (plan 01): cancel the turn, stop the audio and
+        speech workers, flush and close storage, backlight off, release the
+        hardware. Each step is tried even if the one before it failed; a
+        device that cannot flush its database should still switch its screen
+        off."""
+        if self._closed:
+            return
+        self._closed = True
         self.running = False
+
+        def cancel_turn():
+            if self.turn is not None:
+                self.turn.cancel()
+                self.turn = None
+
+        steps = [("turn", cancel_turn)]
         if self.pipeline is not None:
-            self.pipeline.close()
-        self.hal.close()
+            steps.append(("pipeline", self.pipeline.close))
+        steps += self._closers
+        steps += [("backlight", lambda: self.hal.panel.backlight(0.0)),
+                  ("hal", self.hal.close)]
+        for name, fn in steps:
+            try:
+                fn()
+            except Exception:
+                log.exception("shutdown step %s failed", name)
 
     def summary(self):
         """What the web UI shows under "Device"."""

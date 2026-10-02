@@ -16,12 +16,17 @@ import io
 import logging
 import os
 import shutil
+import signal
+import socket
 import sys
 import tempfile
 import threading
 import time
 
 from firmware import events as ev
+from firmware import logs
+from firmware import main as firmware_main
+from firmware import sdnotify
 from firmware import pipeline as pipe
 from firmware.device import Device
 from firmware.hal.base import VOL_DOWN, VOL_UP
@@ -1414,6 +1419,142 @@ def scenario_worker_restarts(report, root):
                  and len(attempts) <= 5, str(len(attempts)))
 
 
+def scenario_notify(report, root):
+    """READY, then WATCHDOG from the main loop, then STOPPING."""
+    off = sdnotify.Notifier(address="")
+    report.check("with no NOTIFY_SOCKET every call does nothing",
+                 not off.enabled and off.ready() is False
+                 and off.watchdog() is False and off.sent == 0)
+
+    sent = []
+    notifier = sdnotify.Notifier(address="/run/systemd/notify",
+                                 send=sent.append)
+
+    clock = FakeClock()
+    hal = EmulatedHAL()
+    hal.now = clock.mono
+    config = UpdateConfig(repo="emulator/trstenko",
+                          data_root=os.path.join(root, "notify"),
+                          install_root=os.path.join(root, "notify"),
+                          auto_check=False)
+    device, _ = firmware_main.build(hal, config=config, notifier=notifier)
+    for _ in range(int(10 * 30)):
+        clock.advance(FRAME)
+        device.tick()
+    pings = sent.count(b"WATCHDOG=1")
+    report.check("the loop pings about once a second, and no faster",
+                 9 <= pings <= 11, "%d pings in 10s" % pings)
+
+    stalled = len(sent)
+    device.add_step("wedge", lambda now: 1 / 0, before="watchdog")
+    with quiet_logs():
+        for _ in range(60):
+            clock.advance(FRAME)
+            device.tick()
+    report.check("a step that raises does not stop the pings",
+                 len(sent) > stalled)
+
+    # The real thing: the loop on its own thread, in real time.
+    sent.clear()
+    hal2 = EmulatedHAL()
+    device2, _ = firmware_main.build(hal2, config=config, notifier=notifier)
+    pipeline = ScriptedPipeline(hal2.speaker, seed=5)
+    device2.pipeline = pipeline
+    order = []
+    device2.add_closer("storage", lambda: order.append("storage"))
+
+    def failing_closer():
+        order.append("flaky")
+        raise OSError("disk went away")
+
+    device2.add_closer("flaky", failing_closer)
+    device2.add_closer("after", lambda: order.append("after"))
+    pipeline.trigger()
+
+    thread = threading.Thread(target=firmware_main.run,
+                              args=(device2, notifier), daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 5.0
+    while b"WATCHDOG=1" not in sent and time.monotonic() < deadline:
+        time.sleep(0.02)
+    report.check("READY comes first, then the watchdog",
+                 sent[:1] == [b"READY=1"] and b"WATCHDOG=1" in sent,
+                 str(sent[:3]))
+    report.check("a turn is in flight when the signal arrives",
+                 device2.turn is not None)
+
+    with quiet_logs():
+        firmware_main.terminate_handler(device2)(signal.SIGTERM, None)
+        thread.join(5.0)
+    report.check("SIGTERM brings the loop down within a moment",
+                 not thread.is_alive())
+    report.check("STOPPING is the last thing systemd hears",
+                 sent[-1] == b"STOPPING=1", str(sent[-2:]))
+    report.check("the turn was cancelled", device2.turn is None)
+    report.check("the screen is off", hal2.panel.backlight_level == 0.0)
+    report.check("every closer ran, in order, even after one failed",
+                 order == ["storage", "flaky", "after"], str(order))
+    device2.close()
+    report.check("closing twice is harmless", order.count("storage") == 1)
+
+    if hasattr(socket, "AF_UNIX"):
+        path = os.path.join(root, "notify.sock")
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        server.bind(path)
+        server.settimeout(2.0)
+        real = sdnotify.Notifier(address=path)
+        real.ready()
+        real.watchdog()
+        got = [server.recv(64), server.recv(64)]
+        server.close()
+        report.check("over a real unix socket: READY, then WATCHDOG",
+                     got == [b"READY=1", b"WATCHDOG=1"], str(got))
+    else:
+        report.check("over a real unix socket (SKIPPED: this Python has no "
+                     "AF_UNIX; CI on Linux runs it)", True)
+
+    gone = sdnotify.Notifier(address=os.path.join(root, "nobody-here.sock"))
+    with quiet_logs():
+        report.check("a socket that is not there never raises",
+                     gone.ready() is False)
+
+
+def scenario_logging(report, root):
+    seen = []
+    logs.setup(stream=False, callback=seen.append)
+    try:
+        logging.getLogger("trstenko.scheduler").info("reminder 3 is due")
+        report.check("a callback sees other modules' lines, named",
+                     "scheduler: reminder 3 is due" in seen, str(seen))
+
+        quiet = Clocked()
+        quiet.device.on_log = seen.append
+        quiet.device._has_callback = True
+        quiet.device.log("volume 40%")
+        report.check("a device line reaches the callback exactly once",
+                     seen.count("volume 40%") == 1, str(seen))
+
+        seen.clear()
+        logging.getLogger("trstenko.scheduler").debug("per-request detail")
+        report.check("DEBUG stays off unless asked for", not seen, str(seen))
+    finally:
+        logs.teardown()
+
+    seen.clear()
+    logging.getLogger("trstenko.scheduler").info("after teardown")
+    report.check("tearing down stops the callback", not seen)
+
+    out = io.StringIO()
+    logs.setup(stream=out)
+    try:
+        logging.getLogger("trstenko.web").info("paired")
+    finally:
+        logs.teardown()
+    report.check("stdout gets level, module and message, no timestamp",
+                 out.getvalue() == "INFO trstenko.web: paired\n",
+                 repr(out.getvalue()))
+
+
 def main(argv=None):
     root = tempfile.mkdtemp(prefix="trstenko-headless-")
     report = Report()
@@ -1425,6 +1566,8 @@ def main(argv=None):
         ("a step that fails", scenario_step_failures),
         ("commands and the inbox", scenario_commands),
         ("restarting a dead worker", scenario_worker_restarts),
+        ("telling systemd, and shutting down", scenario_notify),
+        ("logging", scenario_logging),
         ("boot and a full turn", scenario_boot_and_talk),
         ("the mute switch", scenario_mute),
         ("a turn that fails", scenario_failed_turn),

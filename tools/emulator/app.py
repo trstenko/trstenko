@@ -30,6 +30,7 @@ from tkinter import ttk
 
 from PIL import Image, ImageDraw, ImageTk
 
+from firmware import logs
 from firmware.device import Device
 from firmware.hal.base import POWER, VOL_DOWN, VOL_UP
 from firmware.updates import GitHubReleases, UpdateConfig, UpdateManager
@@ -155,6 +156,9 @@ class Emulator(tk.Tk):
         self._last_log = None
         self._last_log_count = 0
 
+        # What the scheduler and storage log, as well as the device, shows up
+        # in the window -- the same lines the journal gets on the robot.
+        logs.setup(stream=False, callback=self.log)
         self.device = Device(self.hal, self.pipeline, self.updater,
                              on_log=self.log, on_setup=self._setup)
 

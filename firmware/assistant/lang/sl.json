@@ -1,0 +1,12 @@
+{
+  "timer_set": "Časovnik je nastavljen.",
+  "timer_set_generic": "Časovnik je nastavljen.",
+  "reminder_set": "Opomnik je nastavljen {when}.",
+  "volume_set": "Glasnost je {percent} odstotkov.",
+  "memory_saved": "V redu, shranjeno.",
+  "memory_known": "To že vem.",
+  "memory_full": "Moj spomin je poln. Najprej me prosi, naj kaj pozabim.",
+  "memory_secret": "Tega si ne morem zapomniti, ker je videti kot geslo ali ključ.",
+  "memory_forgot": "V redu, pozabljeno.",
+  "memory_none": "Česa takega se ne spomnim."
+}

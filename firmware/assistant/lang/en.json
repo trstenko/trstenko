@@ -1,0 +1,12 @@
+{
+  "timer_set": "Timer set for {duration}.",
+  "timer_set_generic": "Timer set.",
+  "reminder_set": "I'll remind you {when}.",
+  "volume_set": "Volume {percent} percent.",
+  "memory_saved": "Okay, I'll remember that.",
+  "memory_known": "I already knew that.",
+  "memory_full": "My memory is full. Ask me to forget something first.",
+  "memory_secret": "I can't remember that, it looks like a password or a key.",
+  "memory_forgot": "Okay, I've forgotten that.",
+  "memory_none": "I don't remember anything like that."
+}

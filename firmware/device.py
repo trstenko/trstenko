@@ -157,6 +157,7 @@ class Device:
         self.on(ev.WORKER_DIED,
                 lambda event: self.supervisor.died(event.data, self.mono()))
         self.command("set_volume", self._cmd_set_volume)
+        self.command("volume.change", self._cmd_volume_change)
         self.command("settings.update", self._cmd_settings_update)
         self.command("settings.get", self._cmd_settings_get)
         self.command("state", self._cmd_state)
@@ -286,6 +287,16 @@ class Device:
         if not 0.0 <= level <= 1.0:
             raise ev.CommandError("volume must be between 0 and 1")
         self._set_volume(float(level))
+        return {"volume": self.hal.speaker.get_volume()}
+
+    def _cmd_volume_change(self, args):
+        """A step louder or quieter, by the same amount as the buttons: one
+        code path, so a spoken "turn it up" and a press cannot disagree."""
+        direction = args.get("direction") if isinstance(args, dict) else args
+        if direction not in ("up", "down"):
+            raise ev.CommandError("direction must be up or down")
+        step = VOLUME_STEP if direction == "up" else -VOLUME_STEP
+        self._set_volume(self.hal.speaker.get_volume() + step)
         return {"volume": self.hal.speaker.get_volume()}
 
     def _set_volume(self, level):

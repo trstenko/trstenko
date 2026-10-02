@@ -137,6 +137,14 @@ def check_assistant_tables():
     return problems
 
 
+def check_assistant_language():
+    """Every line the device speaks exists in every language, so nothing falls
+    back to English without anyone noticing."""
+    from firmware.assistant import lang
+
+    return ["firmware/assistant: %s" % p for p in lang.check()]
+
+
 def check():
     problems = []
 
@@ -171,6 +179,7 @@ def check():
 
     problems += check_migrations()
     problems += check_assistant_tables()
+    problems += check_assistant_language()
 
     baked = os.path.join(FIRMWARE, "face", "data", "faces.json")
     if not os.path.exists(baked):

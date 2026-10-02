@@ -3159,3 +3159,136 @@ def _fake_providers(fake):
                     ["gemini"]))
             return fake.provider
     return One()
+
+
+# ---- local commands (plan 03, Finding 10) ----
+
+def scenario_intents(report, root):
+    from firmware.assistant import intents
+
+    def m(text, lang="en", alert=False):
+        found = intents.match(text, lang, alert)
+        return None if found is None else (found.name, found.args)
+
+    cases = (
+        ("volume up", ("volume", {"change": "up"})),
+        ("Turn the volume down.", ("volume", {"change": "down"})),
+        ("louder", ("volume", {"change": "up"})),
+        ("Trstenko, quieter please", ("volume", {"change": "down"})),
+        ("turn it up", ("volume", {"change": "up"})),
+        ("volume to 40 percent", ("volume", {"level": 40})),
+        ("set the volume to thirty", ("volume", {"level": 30})),
+        ("stop", ("stop", {})),
+        ("Never mind.", ("stop", {})),
+        ("what's the time?", ("time", {})),
+        ("what time is it", ("time", {})),
+        ("set a timer for ten minutes", ("timer", {"seconds": 600})),
+        ("timer for twenty five minutes", ("timer", {"seconds": 1500})),
+        ("timer for 30 seconds", ("timer", {"seconds": 30})),
+        ("set a two hour timer", ("timer", {"seconds": 7200})),
+        ("set a timer for one minute", ("timer", {"seconds": 60})),
+    )
+    for text, want in cases:
+        report.check("%r means %s" % (text, want[0]), m(text) == want,
+                     str(m(text)))
+
+    for text in ("set a timer for ten minutes and remind me about the bins",
+                 "volume up a bit and play music", "turn the volume to eleven"
+                 " hundred", "what time is it in Tokyo", "timer for banana "
+                 "minutes", "set a timer", "remind me at six", "volume to 150",
+                 "stop the music please play it again", ""):
+        report.check("%r is left to the model" % text, m(text) is None,
+                     str(m(text)))
+    report.check("'okay' means nothing until something is going off",
+                 m("okay") is None and m("okay", alert=True) == ("ack", {}))
+    report.check("'stop' means acknowledge while something is going off, and "
+                 "end the turn otherwise",
+                 m("stop", alert=True) == ("ack", {})
+                 and m("stop") == ("stop", {}))
+    report.check("snooze, with and without a length",
+                 m("snooze", alert=True) == ("snooze", {"minutes": 5})
+                 and m("snooze for ten minutes", alert=True)
+                 == ("snooze", {"minutes": 10})
+                 and m("snooze") is None)
+    report.check("the volume commands still work while it rings",
+                 m("louder", alert=True) == ("volume", {"change": "up"}))
+
+    sl = (("glasneje", ("volume", {"change": "up"})),
+          ("tišje", ("volume", {"change": "down"})),
+          ("povečaj glasnost", ("volume", {"change": "up"})),
+          ("glasnost na 40 odstotkov", ("volume", {"level": 40})),
+          ("koliko je ura", ("time", {})),
+          ("nastavi časovnik na pet minut", ("timer", {"seconds": 300})),
+          ("nastavi časovnik na eno uro".replace("eno", "ena"),
+           ("timer", {"seconds": 3600})),
+          ("ustavi", ("stop", {})))
+    for text, want in sl:
+        report.check("in Slovenian, %r means %s" % (text, want[0]),
+                     m(text, "sl") == want, str(m(text, "sl")))
+    report.check("a Slovenian sentence is not matched by the English list",
+                 m("glasneje", "en") is None)
+    report.check("in the Slovenian alert window, snooze and acknowledge",
+                 m("odloži za deset minut", "sl", True)
+                 == ("snooze", {"minutes": 10})
+                 and m("v redu", "sl", True) == ("ack", {}))
+    report.check("numbers read as words or digits",
+                 intents.parse_number("twenty-five") == 25
+                 and intents.parse_number("25") == 25
+                 and intents.parse_number("ninety nine") == 99
+                 and intents.parse_number("pet", "sl") == 5
+                 and intents.parse_number("petindvajset", "sl") == 25
+                 and intents.parse_number("lots") is None)
+
+    rig = ToolRig(root, "intents")
+    try:
+        strings = rig.strings
+
+        def go(text, alert=False):
+            found = intents.match(text, "en", alert)
+            return intents.run(found, rig.registry, rig.ctx(), strings,
+                               rig.rig.clock.wall, rig.rig.device.timezone,
+                               True, "en")
+
+        spoken, ok = go("set a timer for ten minutes")
+        jobs = rig.rig.scheduler.list("pending")
+        report.check("a spoken timer is the same timer the model would set, "
+                     "with the same words",
+                     ok and spoken == "Timer set for ten minutes."
+                     and len(jobs) == 1 and jobs[0]["source"] == "voice")
+        spoken, ok = go("volume to 40 percent")
+        report.check("volume goes through the same tool",
+                     ok and spoken == "Volume 40 percent."
+                     and abs(rig.rig.device.hal.speaker.get_volume() - 0.4)
+                     < 1e-9)
+        spoken, ok = go("what time is it")
+        report.check("the time is said from the clock, with no request",
+                     ok and spoken == "It's five fifty in the afternoon.",
+                     spoken)
+        rig.rig.clock.set_synced(False)
+        spoken, ok = intents.run(intents.match("what time is it"),
+                                 rig.registry, rig.ctx(), strings,
+                                 rig.rig.clock.wall,
+                                 rig.rig.device.timezone, False, "en")
+        report.check("before the clock is set it says so instead of a wrong "
+                     "time", spoken == "I don't know the time yet.", spoken)
+        rig.rig.clock.set_synced(True)
+        spoken, ok = go("stop")
+        report.check("stop says nothing, and is not a failure",
+                     spoken == "" and ok)
+
+        rig.send("reminders.add", {"seconds": 30, "text": "tea"})
+        rig.rig.run(31.0)
+        spoken, ok = go("snooze for ten minutes", True)
+        report.check("while a timer goes off, snooze starts it again, and "
+                     "says so", ok and spoken == "Okay, snoozed.", spoken)
+        rig.send("reminders.add", {"local_time": "2026-10-02T18:00",
+                                   "text": "Call mum."})
+        rig.rig.advance_to(rig.rig.clock.wall() + 600)
+        rig.rig.run(1.0)
+        window = rig.send("announce.window")
+        report.check("the window is open while it rings", window["open"])
+        spoken, ok = go("okay", True)
+        report.check("'okay' acknowledges it", ok and spoken == ""
+                     and not rig.send("announce.window")["open"])
+    finally:
+        rig.close()

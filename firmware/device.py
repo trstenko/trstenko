@@ -158,6 +158,9 @@ class Device:
                 lambda event: self.supervisor.died(event.data, self.mono()))
         self.command("set_volume", self._cmd_set_volume)
         self.command("volume.change", self._cmd_volume_change)
+        self.command("announce.window", self._cmd_announce_window)
+        self.command("announce.ack", self._cmd_announce_ack)
+        self.command("announce.snooze", self._cmd_announce_snooze)
         self.command("settings.update", self._cmd_settings_update)
         self.command("settings.get", self._cmd_settings_get)
         self.command("state", self._cmd_state)
@@ -288,6 +291,30 @@ class Device:
             raise ev.CommandError("volume must be between 0 and 1")
         self._set_volume(float(level))
         return {"volume": self.hal.speaker.get_volume()}
+
+    def _cmd_announce_window(self, args):
+        """Is something going off, so that "stop" and "snooze" mean it? The
+        voice commands for it are only listened for then (plan 02)."""
+        return {"open": bool(self.announcer is not None
+                             and self.announcer.current is not None)}
+
+    def _cmd_announce_ack(self, args):
+        if self.announcer is None or not self.announcer.acknowledge():
+            raise ev.CommandError("nothing is going off", ev.CONFLICT)
+        return {"ok": True}
+
+    def _cmd_announce_snooze(self, args):
+        minutes = args.get("minutes") if isinstance(args, dict) else None
+        if self.announcer is None:
+            raise ev.CommandError("nothing is going off", ev.CONFLICT)
+        try:
+            done = self.announcer.snooze(minutes)
+        except SchedulerError as exc:
+            raise ev.CommandError(str(exc), exc.kind)
+        if not done:
+            raise ev.CommandError("only a reminder can be snoozed",
+                                  ev.CONFLICT)
+        return {"ok": True}
 
     def _cmd_volume_change(self, args):
         """A step louder or quieter, by the same amount as the buttons: one

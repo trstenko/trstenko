@@ -3630,6 +3630,14 @@ def main(argv=None):
     scenarios = [
         ("the provider table", asst.scenario_tables),
         ("what things cost", asst.scenario_prices),
+        ("the model client: replies", asst.scenario_provider_replies),
+        ("the model client: tool calls", asst.scenario_provider_tools),
+        ("the model client: telling failures apart",
+         asst.scenario_provider_classify),
+        ("the model client: errors and retries",
+         asst.scenario_provider_retries),
+        ("the model client: cut, stalled and cancelled",
+         asst.scenario_provider_faults),
         ("the event queue", scenario_events),
         ("the device on a fake clock", scenario_fake_clock),
         ("frame rates", scenario_frame_rates),
@@ -3686,6 +3694,7 @@ def main(argv=None):
     finally:
         for rig in list(SchedRig.open_rigs):
             rig.close()
+        asst.close_all()
         shutil.rmtree(root, ignore_errors=True)
     return report.done()
 

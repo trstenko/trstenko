@@ -33,6 +33,11 @@ from PIL import Image, ImageDraw, ImageTk
 from firmware import logs
 from firmware.device import Device
 from firmware.hal.base import POWER, VOL_DOWN, VOL_UP
+from firmware.scheduler.wiring import wire
+from firmware.storage import DB_NAME, Database
+from firmware.storage import migrate as migrate_mod
+from firmware.storage import secrets as secrets_mod
+from firmware.storage import settings as settings_mod
 from firmware.updates import GitHubReleases, UpdateConfig, UpdateManager
 from firmware.webui import Auth, UpdateApi, serve
 
@@ -159,8 +164,10 @@ class Emulator(tk.Tk):
         # What the scheduler and storage log, as well as the device, shows up
         # in the window -- the same lines the journal gets on the robot.
         logs.setup(stream=False, callback=self.log)
-        self.device = Device(self.hal, self.pipeline, self.updater,
-                             on_log=self.log, on_setup=self._setup)
+        self.data_root = args.data_root
+        self.db = Database(os.path.join(self.data_root, DB_NAME))
+        migrate_mod.migrate(self.db)
+        self.device = self._new_device()
 
         # Locked like the real one. The device shows its PIN on the panel
         # next to the setup QR code; here the log is the panel.
@@ -610,14 +617,28 @@ class Emulator(tk.Tk):
         self.pending_restart = False
         self._bring_up()
 
+    def _new_device(self):
+        """A device with the same storage and scheduler the robot has, on the
+        computer's own clock. Starting one again, as an update restart does,
+        reads the files afresh and runs the scheduler's boot: a timer that was
+        running is reported as interrupted, as it would be on the board."""
+        device = Device(
+            self.hal, self.pipeline, self.updater, on_log=self.log,
+            on_setup=self._setup, db=self.db,
+            settings=settings_mod.Settings.load(
+                settings_mod.default_path(self.data_root)),
+            secrets=secrets_mod.Secrets.load(
+                secrets_mod.default_path(self.data_root)))
+        wire(device, synced=lambda: True)
+        return device
+
     def _bring_up(self):
         """Start the firmware again against the same install root."""
         broken = self.broken_release.get()
         self.updater = UpdateManager(
             self.config, self.releases, self.hal.system,
             on_event=self._update_event, on_restart=self._simulate_restart)
-        self.device = Device(self.hal, self.pipeline, self.updater,
-                             on_log=self.log, on_setup=self._setup)
+        self.device = self._new_device()
         if broken:
             # A release that draws a face and never becomes a working device.
             # The one the rollback exists for.
@@ -879,6 +900,7 @@ class Emulator(tk.Tk):
     def quit_all(self):
         self.audio.close()
         self.device.close()
+        self.db.close()
         self.server.shutdown()
         self.destroy()
 

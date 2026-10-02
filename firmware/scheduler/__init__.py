@@ -57,7 +57,12 @@ BACKLOG_SECONDS = 6 * 3600
 
 
 class SchedulerError(Exception):
-    """A refusal, in a sentence."""
+    """A refusal, in a sentence. `kind` is for the web layer's status code (see
+    `events.CommandError`); the sentence is for the person."""
+
+    def __init__(self, message, kind=ev.INVALID):
+        super().__init__(message)
+        self.kind = kind
 
 
 def _number(value):
@@ -243,7 +248,7 @@ class Scheduler:
         if self._active_count() >= MAX_ACTIVE_JOBS:
             raise SchedulerError(
                 "You already have %d reminders; cancel some first."
-                % MAX_ACTIVE_JOBS)
+                % MAX_ACTIVE_JOBS, ev.CONFLICT)
 
         now_mono, now_wall = self.mono(), self.wall()
         conn = self.db.conn()
@@ -274,7 +279,7 @@ class Scheduler:
             # the future" cannot be answered. A timer would have worked.
             raise SchedulerError(
                 "I do not know the time yet, so I cannot set a reminder. "
-                "Try again in a minute.")
+                "Try again in a minute.", ev.UNAVAILABLE)
         tz = tz or self.tz()
         try:
             clock.zone(tz)
@@ -300,7 +305,7 @@ class Scheduler:
         row = self._need(job_id)
         if row["state"] not in ACTIVE + (MISSED,):
             raise SchedulerError("Reminder %d is already %s."
-                                 % (job_id, row["state"]))
+                                 % (job_id, row["state"]), ev.CONFLICT)
         self.db.conn().execute("UPDATE jobs SET state = ? WHERE id = ?",
                                (CANCELLED, job_id))
         log.info("%s %d cancelled", row["kind"], job_id)
@@ -315,7 +320,7 @@ class Scheduler:
             raise SchedulerError("Snooze for between 1 minute and 24 hours.")
         if row["state"] not in ACTIVE + (MISSED,):
             raise SchedulerError("Reminder %d is already %s."
-                                 % (job_id, row["state"]))
+                                 % (job_id, row["state"]), ev.CONFLICT)
         now_mono, now_wall = self.mono(), self.wall()
         gap = minutes * 60
         self.db.conn().execute(
@@ -439,7 +444,8 @@ class Scheduler:
             raise SchedulerError("Which reminder? Give its number.")
         row = self._row(job_id)
         if row is None:
-            raise SchedulerError("There is no reminder number %d." % job_id)
+            raise SchedulerError("There is no reminder number %d." % job_id,
+                                 ev.NOT_FOUND)
         return row
 
     def _view(self, job):

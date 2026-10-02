@@ -3177,6 +3177,451 @@ def scenario_spoken_time(report, root):
                  missing.pcm == b"" and missing.seconds == 0.0)
 
 
+class ApiRig:
+    """The page's API in front of a SchedRig. The commander runs a tick, which
+    is what the main loop would do on its own thread."""
+
+    def __init__(self, root, name, **kw):
+        self.rig = SchedRig(root, name, **kw)
+        rig = self.rig
+        config = UpdateConfig(repo="emulator/trstenko", data_root=rig.data,
+                              install_root=rig.data, auto_check=False)
+        self.manager = UpdateManager(
+            config, FakeReleases(kbps=1e9, clock=rig.clock.mono),
+            rig.hal.system, clock=rig.clock.mono,
+            on_event=lambda kind, payload: None, on_restart=lambda: None)
+        self.auth = Auth(rig.data, clock=rig.clock.wall)
+        self.api = UpdateApi(self.manager, rig.device, self.auth,
+                             commander=self._pump)
+        self.token = None
+
+    def _pump(self, cmd):
+        self.rig.device.events.post(cmd)
+        self.rig.tick()
+
+    def pair(self):
+        status, body = self.api.dispatch("POST", "/api/auth",
+                                         {"pin": self.auth.pin})
+        self.token = body["token"]
+        return self.token
+
+    def call(self, method, path, body=None, query=None, token=True):
+        return self.api.dispatch(method, path, body,
+                                 self.token if token else None, query)
+
+
+class Pump:
+    """Runs the device's tick on a thread of its own, as the robot's main loop
+    does, so a real HTTP request can be answered."""
+
+    def __init__(self, device):
+        self.device = device
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        while not self._stop.is_set():
+            self.device.tick()
+            self.device.events.wait(0.005)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self._thread.join(2.0)
+
+
+def scenario_api_v1(report, root):
+    import json as json_mod
+
+    rig = ApiRig(root, "api")
+    r = rig.rig
+    v1 = ("/api/v1/info", "/api/v1/state", "/api/v1/reminders",
+          "/api/v1/settings", "/api/v1/reminders/1/cancel",
+          "/api/v1/reminders/1/snooze")
+    for path in v1:
+        for method in ("GET", "POST", "PATCH"):
+            status, body = rig.call(method, path, {}, token=False)
+            if status != 401 or not body.get("needs_pin"):
+                break
+        else:
+            continue
+        report.check("%s needs a token" % path, False, "%s %s" % (method,
+                                                                 status))
+        break
+    else:
+        report.check("every v1 endpoint answers 401 without a token", True)
+    status, _ = rig.call("GET", "/api/v1/info", token=False)
+    report.check("and a wrong token is no better",
+                 rig.api.dispatch("GET", "/api/v1/info", None, "nope")[0]
+                 == 401 and status == 401)
+
+    rig.pair()
+    status, info = rig.call("GET", "/api/v1/info")
+    report.check("info says which API this is and who is answering",
+                 status == 200 and info["api_version"] == 1
+                 and "reminders" in info["features"]
+                 and info["product"]["model"] == "Trstenko"
+                 and info["product"]["serial"], str(info)[:120])
+
+    status, state = rig.call("GET", "/api/v1/state")
+    report.check("state is everything Home needs in one call",
+                 status == 200 and state["device"]["face"]
+                 and state["time"]["synced"] is True
+                 and state["time"]["timezone"] == TZ
+                 and state["reminders"]["next"] is None
+                 and state["alerts"] == [] and "state" in state["update"],
+                 str(state)[:160])
+
+    # A reminder made through the API, announced on the fake clock.
+    status, made = rig.call("POST", "/api/v1/reminders",
+                            {"text": "call mum",
+                             "local_time": "2026-10-02T18:00"})
+    report.check("a reminder is created with a 201 and says when",
+                 status == 201 and made["ok"] and made["id"]
+                 and made["say"] == "six in the evening"
+                 and made["reminder"]["source"] == "web", str(made)[:140])
+    status, listing = rig.call("GET", "/api/v1/reminders")
+    report.check("it shows in the list",
+                 [x["id"] for x in listing["reminders"]] == [made["id"]])
+    status, state = rig.call("GET", "/api/v1/state")
+    report.check("and as the next reminder on Home",
+                 state["reminders"]["next"]["id"] == made["id"])
+
+    r.advance_to(local_epoch(2026, 10, 2, 18, 0))
+    r.run(1.5)
+    report.check("on the fake clock, at six, it is announced",
+                 r.said == ["Reminder: call mum."] and len(r.plays) == 1,
+                 str(r.said))
+    status, state = rig.call("GET", "/api/v1/state")
+    report.check("Home knows it is ringing",
+                 state["reminders"]["ringing"] == made["id"]
+                 and state["device"]["announcing"]["announcing"])
+    r.press()
+    status, done = rig.call("GET", "/api/v1/reminders", query={"state":
+                                                               "done"})
+    report.check("once acknowledged it is under 'done'",
+                 [x["id"] for x in done["reminders"]] == [made["id"]])
+    status, pending = rig.call("GET", "/api/v1/reminders",
+                               query={"state": "pending"})
+    report.check("and no longer pending", pending["reminders"] == [])
+
+    status, other = rig.call("POST", "/api/v1/reminders",
+                             {"text": "stretch", "in_seconds": 600})
+    report.check("a timer-style reminder takes in_seconds",
+                 status == 201 and other["reminder"]["kind"] == "timer")
+    status, snoozed = rig.call("POST", "/api/v1/reminders/%d/snooze"
+                               % other["id"], {"minutes": 15})
+    report.check("it can be snoozed", status == 200
+                 and snoozed["reminder"]["state"] == "pending")
+    status, snoozed = rig.call("POST", "/api/v1/reminders/%d/snooze"
+                               % other["id"])
+    report.check("snooze with no body uses the default", status == 200)
+    status, gone = rig.call("POST", "/api/v1/reminders/%d/cancel"
+                            % other["id"])
+    report.check("and cancelled", status == 200
+                 and gone["reminder"]["state"] == "cancelled")
+    status, again = rig.call("POST", "/api/v1/reminders/%d/cancel"
+                             % other["id"])
+    report.check("cancelling again is a 409 with the reason",
+                 status == 409 and "already cancelled" in again["error"],
+                 str(again))
+
+    # Refusals, with statuses a page can act on.
+    for (method, path, body, query), want, why in (
+            (("POST", "/api/v1/reminders", {"text": "a", "local_tim": "x"},
+              None), 400, "a misspelt field"),
+            (("POST", "/api/v1/reminders", ["a"], None), 400,
+             "a body that is not an object"),
+            (("POST", "/api/v1/reminders", {"text": "a",
+                                            "local_time": "2026-10-02T09:00"},
+              None), 400, "a time in the past"),
+            (("POST", "/api/v1/reminders", {"text": "x" * 201,
+                                            "in_seconds": 5}, None), 400,
+             "text that is too long"),
+            (("GET", "/api/v1/reminders", None, {"state": "soonish"}), 400,
+             "an unknown state filter"),
+            (("POST", "/api/v1/reminders/9999/cancel", {}, None), 404,
+             "a reminder that is not there"),
+            (("POST", "/api/v1/reminders/abc/cancel", {}, None), 404,
+             "an id that is not a number"),
+            (("POST", "/api/v1/reminders/%d/snooze" % made["id"],
+              {"minutes": 0}, None), 400, "a snooze of nothing"),
+            (("DELETE", "/api/v1/reminders", None, None), 405,
+             "the wrong method"),
+            (("POST", "/api/v1/info", {}, None), 405,
+             "posting to info"),
+            (("GET", "/api/v1/reminders/1/cancel", None, None), 405,
+             "getting a cancel"),
+            (("GET", "/api/v1/nonsense", None, None), 404,
+             "an endpoint that does not exist")):
+        status, payload = rig.call(method, path, body, query)
+        report.check("%s is a %d" % (why, want), status == want
+                     and payload.get("error"), "%s %s" % (status, payload))
+
+    status, payload = rig.call("POST", "/api/v1/reminders",
+                               {"text": "a", "in_seconds": 5,
+                                "source": "voice"})
+    report.check("a client cannot claim to be the voice", status == 400)
+
+    # Settings.
+    status, got = rig.call("GET", "/api/v1/settings")
+    report.check("settings are readable",
+                 status == 200 and got["settings"]["voice"]["volume"] == 0.6
+                 and got["settings"]["quiet"]["from"] == "22:00")
+    before = json_mod.dumps(got, sort_keys=True)
+    status, bad = rig.call("PATCH", "/api/v1/settings",
+                           {"voice": {"volume": 9}, "quiet": {"from": "x"},
+                            "nonsense": {"a": 1}})
+    report.check("a bad settings patch is a 400, listing every problem",
+                 status == 400 and all(n in bad["error"] for n in (
+                     "voice.volume", "quiet.from", "nonsense")), str(bad))
+    status, after = rig.call("GET", "/api/v1/settings")
+    report.check("and changed nothing",
+                 json_mod.dumps(after, sort_keys=True) == before)
+    status, nope = rig.call("PATCH", "/api/v1/settings", ["voice"])
+    report.check("a patch that is not an object is a 400", status == 400)
+    status, nope = rig.call("PATCH", "/api/v1/settings",
+                            {"updates": {"channel": "dev"}})
+    report.check("the updater's own settings are refused here",
+                 status == 400 and "updates" in nope["error"])
+    status, ok = rig.call("PATCH", "/api/v1/settings",
+                          {"voice": {"volume": 0.3},
+                           "quiet": {"enabled": False}})
+    report.check("a good patch is a 200 saying what changed",
+                 status == 200 and sorted(ok["changed"])
+                 == ["quiet.enabled", "voice.volume"]
+                 and ok["settings"]["voice"]["volume"] == 0.3, str(ok)[:100])
+    report.check("the speaker followed, through the main thread",
+                 abs(r.hal.speaker.get_volume() - 0.3) < 1e-9)
+    status, back = rig.call("GET", "/api/v1/settings")
+    report.check("and a read shows it", back["settings"]["voice"]["volume"]
+                 == 0.3)
+    saved = json_mod.load(open(os.path.join(r.data, "settings.json"),
+                               encoding="utf-8"))
+    report.check("and it is on disk", saved["voice"]["volume"] == 0.3)
+
+    # The main thread too busy to answer.
+    rig.api.v1.timeout = 0.05
+    rig.api.v1._commander = lambda cmd: None
+    start = time.monotonic()
+    status, busy = rig.call("GET", "/api/v1/settings")
+    report.check("a device that does not answer in time is a 503, not a hang",
+                 status == 503 and "busy" in busy["error"]
+                 and time.monotonic() - start < 1.0, "%s %s" % (status, busy))
+    rig.api.v1._commander = rig._pump
+    rig.api.v1.timeout = 2.0
+
+    # A device with no scheduler or settings behind the API.
+    bare = Clocked()
+    plain = UpdateApi(rig.manager, bare.device, rig.auth,
+                      commander=lambda cmd: (bare.device.events.post(cmd),
+                                             bare.step(0.1)))
+    status, payload = plain.dispatch("GET", "/api/v1/reminders", None,
+                                     rig.token, None)
+    report.check("with no scheduler it says so, as a 400",
+                 status == 400 and "not available" in payload["error"],
+                 str(payload))
+    status, payload = plain.dispatch("GET", "/api/v1/settings", None,
+                                     rig.token, None)
+    report.check("and with no settings, a 503", status == 503)
+    nodev = UpdateApi(rig.manager, None, rig.auth)
+    status, payload = nodev.dispatch("GET", "/api/v1/state", None, rig.token)
+    report.check("and with no device at all, a 503",
+                 status == 503 and "not ready" in payload["error"])
+    status, info = nodev.dispatch("GET", "/api/v1/info", None, rig.token)
+    report.check("though info still answers, so an app can check "
+                 "compatibility", status == 200)
+
+    # A clock that is not right yet.
+    cold = ApiRig(root, "api-cold", synced=False)
+    cold.pair()
+    status, why = cold.call("POST", "/api/v1/reminders",
+                            {"text": "a", "local_time": "2026-10-03T09:00"})
+    report.check("a reminder before the clock is known is a 503 that says "
+                 "to try again", status == 503
+                 and "Try again" in why["error"], str(why))
+    status, timer = cold.call("POST", "/api/v1/reminders",
+                              {"text": "a", "in_seconds": 30})
+    report.check("a timer is fine", status == 201)
+    status, state = cold.call("GET", "/api/v1/state")
+    report.check("and Home says the clock is not synced",
+                 state["time"]["synced"] is False)
+
+    # The limit.
+    full = ApiRig(root, "api-full")
+    full.pair()
+    for n in range(50):
+        full.call("POST", "/api/v1/reminders", {"text": "r", "in_seconds": 600})
+    status, over = full.call("POST", "/api/v1/reminders",
+                             {"text": "r", "in_seconds": 600})
+    report.check("the 51st is a 409 with the sentence",
+                 status == 409 and "50 reminders" in over["error"],
+                 str(over))
+
+    # A key never leaves the device through any of this.
+    from firmware.storage.secrets import Secrets
+
+    key = "AIzaSyAPITESTKEYAPITESTKEY00000000zzzz"
+    secrets = Secrets.load(os.path.join(r.data, "secrets.json"))
+    secrets.set_key("gemini", key)
+    r.device.secrets = secrets
+    seen = []
+    for path in ("/api/v1/info", "/api/v1/state", "/api/v1/settings",
+                 "/api/v1/reminders"):
+        status, payload = rig.call("GET", path)
+        seen.append(json_mod.dumps(payload))
+    report.check("no key is in info, state, settings or reminders",
+                 all(key not in text for text in seen))
+    for r2 in (rig, cold, full):
+        r2.rig.close()
+
+
+def scenario_web_servers(report, root):
+    """The same API over real HTTP, from both servers, with the headers."""
+    import http.client
+
+    rig = ApiRig(root, "http")
+    rig.pair()
+    device = rig.rig.device
+
+    needed = {"content-security-policy":
+              "default-src 'self'; style-src 'self' 'unsafe-inline'",
+              "x-content-type-options": "nosniff",
+              "referrer-policy": "no-referrer"}
+
+    def headers_ok(response):
+        got = {k.lower(): v for k, v in response.getheaders()}
+        return all(got.get(k) == v for k, v in needed.items())
+
+    def exercise(label, request):
+        """`request(method, path, body, token)` -> (status, headers_ok, body)."""
+        results = {}
+        results["page"] = request("GET", "/", None, None)
+        results["script"] = request("GET", "/app.js", None, None)
+        results["missing"] = request("GET", "/nothing-here", None, None)
+        results["unpaired"] = request("GET", "/api/v1/info", None, None)
+        results["info"] = request("GET", "/api/v1/info", None, rig.token)
+        results["patch"] = request("PATCH", "/api/v1/settings",
+                                   {"voice": {"volume": 0.25}}, rig.token)
+        results["badpatch"] = request("PATCH", "/api/v1/settings",
+                                      {"voice": {"volume": 5}}, rig.token)
+        results["post"] = request("POST", "/api/v1/reminders",
+                                  {"text": "x", "in_seconds": 120},
+                                  rig.token)
+        results["query"] = request("GET", "/api/v1/reminders?state=pending",
+                                   None, rig.token)
+        results["update"] = request("GET", "/api/update", None, rig.token)
+        results["junk"] = request("POST", "/api/v1/reminders", "{not json",
+                                  rig.token)
+
+        report.check("%s: the page and its script are served" % label,
+                     results["page"][0] == 200 and results["script"][0] == 200
+                     and b"<script src=\"/app.js\"></script>"
+                     in results["page"][2]
+                     and b"<script>" not in results["page"][2]
+                     and b"fetch(\"/api/update\"" in results["script"][2])
+        report.check("%s: an unknown path is a 404" % label,
+                     results["missing"][0] == 404)
+        report.check("%s: 401 without a token" % label,
+                     results["unpaired"][0] == 401)
+        report.check("%s: info over HTTP" % label,
+                     results["info"][0] == 200
+                     and json.loads(results["info"][2])["api_version"] == 1)
+        report.check("%s: PATCH settings works, and the bad one is a 400"
+                     % label, results["patch"][0] == 200
+                     and results["badpatch"][0] == 400,
+                     "%s %s" % (results["patch"][0], results["badpatch"][0]))
+        report.check("%s: POST creates, and a query string filters"
+                     % label, results["post"][0] == 201
+                     and results["query"][0] == 200
+                     and len(json.loads(results["query"][2])["reminders"])
+                     >= 1)
+        report.check("%s: the existing update endpoint still works" % label,
+                     results["update"][0] == 200
+                     and json.loads(results["update"][2])["state"])
+        report.check("%s: a body that is not JSON is a 400" % label,
+                     results["junk"][0] == 400)
+        bad = [name for name, (_, ok, _) in results.items() if not ok]
+        report.check("%s: every response carries the security headers "
+                     "(page, script, errors, API)" % label, not bad,
+                     "missing on: %s" % bad)
+
+    from firmware.webui import serve
+
+    server = serve(rig.api, host="127.0.0.1", port=0)
+    port = server.server_address[1]
+
+    def stdlib_request(method, path, body, token):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        headers = {}
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        data = None
+        if body is not None:
+            data = body.encode() if isinstance(body, str) \
+                else json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+        conn.request(method, path, data, headers)
+        response = conn.getresponse()
+        raw = response.read()
+        ok = headers_ok(response)
+        conn.close()
+        return response.status, ok, raw
+
+    with Pump(device):
+        exercise("standard-library server", stdlib_request)
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("POST", "/api/v1/reminders", b"x" * 70000,
+                     {"Content-Length": "70000",
+                      "Authorization": "Bearer " + rig.token})
+        response = conn.getresponse()
+        response.read()
+        report.check("standard-library server: an oversized body is a 413, "
+                     "before anyone reads it", response.status == 413)
+        conn.close()
+    server.shutdown()
+    server.server_close()
+
+    try:
+        from firmware.webui import create_app
+
+        app = create_app(rig.manager, device, rig.auth)
+    except ImportError:
+        report.check("Flask server (SKIPPED: Flask is not installed here; "
+                     "CI installs it)", True)
+        rig.rig.close()
+        return
+
+    client = app.test_client()
+
+    def flask_request(method, path, body, token):
+        headers = {}
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        kw = {}
+        if body is not None:
+            kw["data"] = body if isinstance(body, str) \
+                else json.dumps(body)
+            kw["content_type"] = "application/json"
+        response = client.open(path, method=method, headers=headers, **kw)
+        got = {k.lower(): v for k, v in response.headers.items()}
+        ok = all(got.get(k) == v for k, v in needed.items())
+        return response.status_code, ok, response.get_data()
+
+    with Pump(device):
+        exercise("Flask server", flask_request)
+        big = client.post("/api/v1/reminders", data=b"x" * 70000,
+                          content_type="application/json",
+                          headers={"Authorization": "Bearer " + rig.token})
+        report.check("Flask server: an oversized body is a 413",
+                     big.status_code == 413)
+    rig.rig.close()
+
+
 def main(argv=None):
     root = tempfile.mkdtemp(prefix="trstenko-headless-")
     report = Report()
@@ -3190,6 +3635,8 @@ def main(argv=None):
         ("restarting a dead worker", scenario_worker_restarts),
         ("telling systemd, and shutting down", scenario_notify),
         ("logging", scenario_logging),
+        ("the v1 API", scenario_api_v1),
+        ("the same API over HTTP, from both servers", scenario_web_servers),
         ("timers", scenario_scheduler_timers),
         ("reminders", scenario_scheduler_reminders),
         ("the scheduler's limits and rules", scenario_scheduler_limits),

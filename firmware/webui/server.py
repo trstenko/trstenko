@@ -16,6 +16,9 @@ import json
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qsl
+
+from .headers import MAX_BODY, SECURITY_HEADERS
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 
@@ -31,9 +34,9 @@ class _Handler(BaseHTTPRequestHandler):
         pass  # the device's journal is not a web access log
 
     def do_GET(self):
-        path = self.path.split("?", 1)[0]
+        path, _, query = self.path.partition("?")
         if path.startswith("/api/"):
-            self._api("GET", path, {})
+            self._api("GET", path, {}, dict(parse_qsl(query)))
             return
         self._static(path)
 
@@ -45,8 +48,21 @@ class _Handler(BaseHTTPRequestHandler):
         return self.headers.get("X-Trstenko-Token", "").strip()
 
     def do_POST(self):
-        path = self.path.split("?", 1)[0]
-        length = int(self.headers.get("Content-Length") or 0)
+        self._with_body("POST")
+
+    def do_PATCH(self):
+        self._with_body("PATCH")
+
+    def _with_body(self, method):
+        path, _, query = self.path.partition("?")
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_BODY:
+            self._send(413, json.dumps({"error": "request too large"}).encode(),
+                       "application/json")
+            return
         raw = self.rfile.read(length) if length else b"{}"
         try:
             body = json.loads(raw or b"{}")
@@ -54,10 +70,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(400, json.dumps({"error": "body is not JSON"}).encode(),
                        "application/json")
             return
-        self._api("POST", path, body)
+        self._api(method, path, body, dict(parse_qsl(query)))
 
-    def _api(self, method, path, body):
-        status, payload = self.api.dispatch(method, path, body, self._token())
+    def _api(self, method, path, body, query=None):
+        status, payload = self.api.dispatch(method, path, body, self._token(),
+                                            query)
         self._send(status, json.dumps(payload).encode("utf-8"),
                    "application/json")
 
@@ -77,6 +94,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in SECURITY_HEADERS.items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 

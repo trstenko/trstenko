@@ -158,6 +158,8 @@ class Device:
                 lambda event: self.supervisor.died(event.data, self.mono()))
         self.command("set_volume", self._cmd_set_volume)
         self.command("settings.update", self._cmd_settings_update)
+        self.command("settings.get", self._cmd_settings_get)
+        self.command("state", self._cmd_state)
         # Always registered, so a device without a scheduler says so rather
         # than claiming the command does not exist.
         self.command("reminders.add", self._cmd_reminders_add)
@@ -268,7 +270,7 @@ class Device:
         try:
             cmd.reply(fn(cmd.args))
         except ev.CommandError as exc:
-            cmd.fail(str(exc))
+            cmd.fail(str(exc), exc.kind)
         except Exception:
             # Ours, not the caller's: count it, keep the detail in the log
             # and give the page something it can show.
@@ -329,6 +331,37 @@ class Device:
             self.log("settings changed: %s" % ", ".join(changed))
             self._apply_settings(changed)
         return {"changed": changed, "settings": self.settings.public()}
+
+    def _cmd_settings_get(self, args):
+        if self.settings is None:
+            raise ev.CommandError("settings are not available on this device",
+                                  ev.UNAVAILABLE)
+        return {"settings": self.settings.public()}
+
+    def _cmd_state(self, args):
+        """Everything the page's Home screen needs from the main thread, in
+        one answer. Read here rather than by the web thread so the numbers
+        are from one moment and nothing is read while it changes."""
+        scheduler = self.scheduler
+        next_up = None
+        if scheduler is not None:
+            pending = scheduler.list("pending")
+            next_up = pending[0] if pending else None
+        alerts = [{"kind": "service_down", "name": name}
+                  for name in self.supervisor.down()]
+        alerts += [{"kind": "failing", "name": name}
+                   for name in self.failing()]
+        return {
+            "device": self.summary(),
+            "time": {"now": self.wall(), "timezone": self.timezone(),
+                     "synced": scheduler.synced if scheduler else None},
+            "reminders": {
+                "next": next_up,
+                "ringing": (self.announcer.ringing
+                            if self.announcer else None),
+            },
+            "alerts": alerts,
+        }
 
     def _apply_settings(self, changed):
         """Push settings to the services that hold a copy of them. `changed`
@@ -422,7 +455,7 @@ class Device:
                 repeat_spec=args.get("repeat"), tz=args.get("tz"),
                 source=source)
         except SchedulerError as exc:
-            raise ev.CommandError(str(exc))
+            raise ev.CommandError(str(exc), exc.kind)
         self.log("%s %d set" % (view["kind"], view["id"]))
         return {"ok": True, "id": view["id"], "say": view["say"],
                 "reminder": view}
@@ -437,7 +470,7 @@ class Device:
         try:
             view = scheduler.cancel(self._job_id(args))
         except SchedulerError as exc:
-            raise ev.CommandError(str(exc))
+            raise ev.CommandError(str(exc), exc.kind)
         self.announcer.job_cancelled(view["id"])
         return {"ok": True, "id": view["id"], "reminder": view}
 
@@ -455,7 +488,7 @@ class Device:
                 scheduler.snooze(job_id, minutes)
             view = scheduler.get(job_id)
         except SchedulerError as exc:
-            raise ev.CommandError(str(exc))
+            raise ev.CommandError(str(exc), exc.kind)
         return {"ok": True, "id": view["id"], "reminder": view}
 
     def _cmd_reminders_list(self, args):

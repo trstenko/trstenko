@@ -89,9 +89,22 @@ class Event:
         return "Event(%s)" % self.kind
 
 
+# Why a command was refused, so the web layer can pick a status code without
+# reading the sentence: a bad request, something that is not there, something
+# the current state forbids, or something that cannot be done just now.
+INVALID = "invalid"
+NOT_FOUND = "not_found"
+CONFLICT = "conflict"
+UNAVAILABLE = "unavailable"
+
+
 class CommandError(Exception):
     """The main thread looked at the command and refused it. The message is
     written for a person, because the page shows it as it is."""
+
+    def __init__(self, message, kind=INVALID):
+        super().__init__(message)
+        self.kind = kind
 
 
 class CommandTimeout(Exception):
@@ -107,21 +120,23 @@ class Command:
     fills in `reply` or `fail`.
     """
 
-    __slots__ = ("name", "args", "result", "error", "_done")
+    __slots__ = ("name", "args", "result", "error", "kind", "_done")
 
     def __init__(self, name, args=None):
         self.name = name
         self.args = args
         self.result = None
         self.error = None
+        self.kind = INVALID
         self._done = threading.Event()
 
     def reply(self, result=None):
         self.result = result
         self._done.set()
 
-    def fail(self, message):
+    def fail(self, message, kind=INVALID):
         self.error = str(message)
+        self.kind = kind
         self._done.set()
 
     @property
@@ -132,7 +147,7 @@ class Command:
         if not self._done.wait(timeout):
             raise CommandTimeout(self.name)
         if self.error is not None:
-            raise CommandError(self.error)
+            raise CommandError(self.error, self.kind)
         return self.result
 
     def __repr__(self):

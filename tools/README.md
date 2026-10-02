@@ -11,6 +11,7 @@ starts depending on it.
 | `face/bake.py` | Writes `firmware/face/data/faces.json` from that. |
 | `face/preview.py` | The face on a PC, with per-frame SPI cost. |
 | `check_layout.py` | Enforces the firmware/tools split. |
+| `wakeword/` | Trains the "Trstenko" micro-wake-word model that ships on a sold unit. Docker, not pip -- see its own README. |
 
     pip install -r tools/requirements.txt
 
@@ -140,7 +141,7 @@ Keep the private key wherever the team keeps its other secrets. Not the repo.
     python -m tools.face.bake --check   # is the baked file stale?
 
 `ae_import.py` is the part that has to stay out of the firmware: it reads
-`../docs/assets/brand/face-states/ae/faces.json`, which is not on the robot,
+`../assets/brand/face-states/ae/faces.json`, which is not on the robot,
 and converts AE's (speed, influence) keyframe eases into cubic bezier handles.
 Doing that once on a build machine is cheaper and less fragile than shipping
 the converter and hoping the export is there.

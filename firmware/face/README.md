@@ -57,7 +57,7 @@ y 32–192), because on the device that part is simply not sent.
 | `face_error` | `states.py` — overrides the comp, see below |
 | everything else | `states.py` |
 
-`tools/face/ae_import.py` reads `docs/assets/brand/face-states/ae/faces.json`
+`tools/face/ae_import.py` reads `assets/brand/face-states/ae/faces.json`
 and rebuilds AE's curves — the (speed, influence) ease on each keyframe
 converts to cubic bezier handles, so a curve shaped in the graph editor arrives
 intact. That conversion runs on a build machine, not on the robot:

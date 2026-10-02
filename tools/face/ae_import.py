@@ -24,10 +24,10 @@ TRANSFORM = {
 
 SCALED_BY_100 = ("sx", "sy")
 
-# code/tools/face/ -> Trstenko/docs/assets/brand/face-states/ae/faces.json
+# code/tools/face/ -> Trstenko/assets/brand/face-states/ae/faces.json
 DEFAULT_PATH = os.path.normpath(os.path.join(
     os.path.dirname(__file__), "..", "..", "..",
-    "docs", "assets", "brand", "face-states", "ae", "faces.json",
+    "assets", "brand", "face-states", "ae", "faces.json",
 ))
 
 

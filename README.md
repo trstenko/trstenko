@@ -3,8 +3,8 @@
 Code for the Trstenko product (Moje podjetje project).
 
 Everything that is not code lives one level up, outside version control:
-**`../docs/`** for the plan, the costing and the order, **`../docs/cad/`** for the
-enclosure and **`../docs/assets/`** for the brand and the renders. Start at
+**`../docs/`** for the plan, the costing and the order, **`../cad/`** for the
+enclosure and **`../assets/`** for the brand and the renders. Start at
 `../docs/README.md`.
 
 ## The one rule about layout
@@ -92,7 +92,7 @@ panel's real 320 × 240 with the SPI cost of every frame. See
 [firmware/face/README.md](firmware/face/README.md).
 
 The animation comes out of After Effects. `tools/face/bake.py` reads the
-export from `../docs/assets/brand/face-states/ae/faces.json`, converts AE's
+export from `../assets/brand/face-states/ae/faces.json`, converts AE's
 (speed, influence) eases into bezier handles, and writes
 `firmware/face/data/faces.json`. Re-export from AE, then:
 

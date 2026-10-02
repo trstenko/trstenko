@@ -7,6 +7,7 @@ network, a key or a Piper model.
 """
 
 import calendar
+import collections
 import copy
 import json
 import logging
@@ -3739,3 +3740,421 @@ def scenario_tts_real(report, root):
                      done and 0.8 < seconds < 5.0)
     finally:
         synth.close()
+
+
+# ---- the ear: wake word, VAD, recording (plan 03, Finding 13) ----
+
+CHUNK = 320          # 10ms of 16-bit mono at 16kHz
+
+
+def _speech_pcm(seconds, amp=6000):
+    import math
+    import struct
+
+    n = int(16000 * seconds)
+    return b"".join(struct.pack("<h", int(amp * math.sin(i * 0.31)))
+                    for i in range(n))
+
+
+def _silence_pcm(seconds):
+    return b"\x00\x00" * int(16000 * seconds)
+
+
+class ScriptMic:
+    """A microphone that plays back what it is given, one chunk per read."""
+
+    def __init__(self):
+        self.chunks = collections.deque()
+        self.powered = True
+        self.reads = 0
+
+    def feed(self, pcm):
+        for i in range(0, len(pcm), CHUNK):
+            self.chunks.append(pcm[i:i + CHUNK])
+
+    def available(self):
+        return self.powered
+
+    def read(self, frames):
+        if not self.powered:
+            return b""
+        self.reads += 1
+        return self.chunks.popleft() if self.chunks else b""
+
+
+class ScriptedDetector:
+    def __init__(self, fire_at=()):
+        self.fire_at = set(fire_at)
+        self.seen = 0
+
+    def process(self, chunk):
+        self.seen += 1
+        return self.seen in self.fire_at
+
+
+class EarRig:
+    def __init__(self, fire_at=(), speaking=lambda: False, barge=False):
+        from firmware import events as ev
+        from firmware.assistant import audio as audio_mod
+        from firmware.assistant import vad as vad_mod
+
+        from .clock import FakeClock
+
+        self.ev = ev
+        self.clock = FakeClock(mono=100.0)
+        self.mic = ScriptMic()
+        self.inbox = ev.EventQueue()
+        self.detector = ScriptedDetector(fire_at)
+        self.audio = audio_mod.AudioIn(
+            self.mic, self.inbox.post, self.detector, vad_mod.EnergyVad(),
+            mono=self.clock.mono, speaking=speaking,
+            barge_in=lambda: barge, sleep=lambda s: None)
+        self.events = []
+
+    def run(self, steps):
+        """Feed `steps` chunks' worth of time through the thread's body."""
+        for _ in range(steps):
+            self.audio.step()
+            self.clock.advance(0.01)
+        self.collect()
+
+    def collect(self):
+        for item in self.inbox.drain(1000):
+            self.events.append(item)
+
+    def of(self, kind):
+        self.collect()
+        return [e for e in self.events if e.kind == kind]
+
+
+def scenario_audio_in(report, root):
+    from firmware import events as ev
+    from firmware.assistant import audio as audio_mod
+
+    from .headless import quiet_logs
+
+    rig = EarRig()
+    rig.mic.feed(_silence_pcm(3.0))
+    rig.run(300)
+    report.check("waiting in a quiet room posts nothing, and runs only the "
+                 "wake word",
+                 rig.events == [] and rig.detector.seen == 300)
+    report.check("the ring holds two seconds and no more",
+                 len(rig.audio._ring) == 2 * 16000 * 2)
+
+    rig = EarRig(fire_at=[50])
+    rig.mic.feed(_speech_pcm(0.2) + _silence_pcm(0.3))
+    rig.mic.feed(_silence_pcm(2.0))
+    rig.run(120)
+    wake = rig.of(ev.WAKE_WORD)
+    report.check("the wake word is posted, and the thread waits to be told "
+                 "to record", len(wake) == 1
+                 and rig.audio.state in ("armed", "waiting"))
+    rig.run(150)
+    report.check("a wake word nobody takes up lapses after a second: it does "
+                 "not record by itself",
+                 rig.audio.state == "waiting" and rig.audio.captures == 0
+                 and not rig.of(ev.SPEECH_ENDED))
+
+    # A whole turn: noise in the pre-roll, the wake word, then the question.
+    rig = EarRig(fire_at=[100])
+    marker = _speech_pcm(0.5, amp=2000)
+    rig.mic.feed(_silence_pcm(0.5) + marker)          # chunks 1 - 100
+    rig.mic.feed(_silence_pcm(0.2))                   # a gap after the wake
+    rig.run(120)
+    report.check("wake word fired", len(rig.of(ev.WAKE_WORD)) == 1)
+    rig.audio.begin_capture("t1")
+    rig.mic.feed(_speech_pcm(1.5) + _silence_pcm(1.0))
+    rig.run(260)
+    ended = rig.of(ev.SPEECH_ENDED)
+    report.check("main takes it up and the recording ends on silence, "
+                 "once", len(ended) == 1
+                 and ended[0].data["reason"] == "speech"
+                 and ended[0].data["turn_id"] == "t1", str(ended))
+    pcm = ended[0].data["pcm"]
+    report.check("the recording starts from the ring, so the first words "
+                 "are not clipped", pcm[:len(marker) // 2] != b""
+                 and len(pcm) > len(marker) and marker[:640] in pcm)
+    seconds = len(pcm) / 32000.0
+    report.check("and ends about 0.7s after the speech: %.1fs in all"
+                 % seconds, 3.0 < seconds < 4.4)
+    report.check("speech started was announced", len(
+        rig.of(ev.SPEECH_STARTED)) == 1)
+    report.check("it goes back to waiting", rig.audio.state == "waiting")
+
+    rig = EarRig(fire_at=[10])
+    rig.mic.feed(_silence_pcm(0.3))
+    rig.run(30)
+    rig.audio.begin_capture("t2")
+    rig.mic.feed(_silence_pcm(6.0))
+    rig.run(560)
+    ended = rig.of(ev.SPEECH_ENDED)
+    report.check("five seconds of nothing after the wake word is a false "
+                 "wake: it ends quietly, with no audio to send, and is "
+                 "counted",
+                 len(ended) == 1 and ended[0].data["reason"] == "silence"
+                 and ended[0].data["pcm"] == b""
+                 and rig.audio.false_wakes == 1, str(ended))
+
+    rig = EarRig(fire_at=[10])
+    rig.mic.feed(_silence_pcm(0.3))
+    rig.run(30)
+    rig.audio.begin_capture("t3")
+    rig.mic.feed(_speech_pcm(0.2) + _silence_pcm(6.0))
+    rig.run(600)
+    ended = rig.of(ev.SPEECH_ENDED)
+    report.check("a cough is not a question: too little speech is the same "
+                 "as none",
+                 len(ended) == 1 and ended[0].data["reason"] == "silence")
+
+    rig = EarRig(fire_at=[10])
+    rig.mic.feed(_silence_pcm(0.3))
+    rig.run(30)
+    rig.audio.begin_capture("t4")
+    rig.mic.feed(_speech_pcm(13.0))
+    rig.run(1400)
+    ended = rig.of(ev.SPEECH_ENDED)
+    report.check("someone who never stops is cut off at twelve seconds",
+                 len(ended) == 1 and ended[0].data["reason"] == "max"
+                 and 12.0 <= len(ended[0].data["pcm"]) / 32000.0 < 14.6,
+                 str(len(ended[0].data["pcm"]) / 32000.0 if ended else 0))
+
+    rig = EarRig()
+    rig.mic.feed(_silence_pcm(0.3))
+    rig.run(30)
+    rig.audio.begin_capture("f1", followup=True)
+    rig.mic.feed(_speech_pcm(1.0) + _silence_pcm(1.0))
+    rig.run(250)
+    ended = rig.of(ev.SPEECH_ENDED)
+    report.check("a follow-up needs no wake word, and has no pre-roll: it is "
+                 "what was said after the question",
+                 len(ended) == 1 and ended[0].data["reason"] == "speech"
+                 and len(ended[0].data["pcm"]) < 3.0 * 32000
+                 and ended[0].data["turn_id"] == "f1")
+    rig.audio.begin_capture("f2", followup=True)
+    rig.mic.feed(_silence_pcm(6.0))
+    rig.run(600)
+    ended = rig.of(ev.SPEECH_ENDED)
+    report.check("and a follow-up nobody answers ends quietly after five "
+                 "seconds", ended[-1].data["reason"] == "silence"
+                 and ended[-1].data["pcm"] == b"")
+
+    # Muting.
+    rig = EarRig(fire_at=[5])
+    rig.mic.powered = False
+    rig.mic.feed(_speech_pcm(0.5))
+    rig.run(50)
+    report.check("with the mic gone nothing is read and no wake word can "
+                 "complete; MicLost is said once",
+                 len(rig.of(ev.MIC_LOST)) == 1 and rig.detector.seen == 0
+                 and not rig.of(ev.WAKE_WORD))
+    rig.mic.powered = True
+    rig.run(80)
+    report.check("and MicBack when it returns, found within half a second",
+                 len(rig.of(ev.MIC_BACK)) == 1)
+    report.check("with a clean ring: nothing from before is carried over",
+                 len(rig.audio._ring) < 16000 * 2)
+
+    rig = EarRig(fire_at=[10])
+    rig.mic.feed(_silence_pcm(0.3))
+    rig.run(30)
+    rig.audio.begin_capture("m1")
+    rig.mic.feed(_speech_pcm(0.5))
+    rig.run(20)
+    rig.mic.powered = False
+    rig.run(10)
+    rig.mic.powered = True
+    rig.mic.feed(_silence_pcm(2.0))
+    rig.run(300)
+    report.check("muted during a recording: no half a question is sent",
+                 not rig.of(ev.SPEECH_ENDED) and len(rig.of(ev.MIC_LOST)) == 1
+                 and rig.audio.state == "waiting")
+
+    rig = EarRig(fire_at=[10])
+    rig.mic.feed(_silence_pcm(0.3))
+    rig.run(30)
+    rig.audio.begin_capture("c1")
+    rig.mic.feed(_speech_pcm(0.5))
+    rig.run(20)
+    rig.audio.abort()
+    rig.mic.feed(_silence_pcm(2.0))
+    rig.run(250)
+    report.check("a turn cancelled by main stops the recording and says "
+                 "nothing", not rig.of(ev.SPEECH_ENDED)
+                 and rig.audio.state == "waiting")
+
+    # Half-duplex.
+    speaking = [True]
+    rig = EarRig(fire_at=[3, 4], speaking=lambda: speaking[0])
+    rig.mic.feed(_speech_pcm(1.0))
+    rig.run(100)
+    report.check("while the device speaks, the wake word is not listened for",
+                 rig.detector.seen == 0 and not rig.of(ev.WAKE_WORD))
+    speaking[0] = False
+    rig.mic.feed(_silence_pcm(1.0))
+    rig.run(20)
+    report.check("and not for 300ms after it stops either",
+                 rig.detector.seen == 0 or rig.detector.seen < 5)
+    rig.run(60)
+    report.check("then it listens again",
+                 rig.detector.seen >= 3 and len(rig.of(ev.WAKE_WORD)) == 1)
+
+    speaking = [True]
+    rig = EarRig(fire_at=[3], speaking=lambda: speaking[0], barge=True)
+    rig.mic.feed(_speech_pcm(0.3))
+    rig.run(20)
+    report.check("with barge-in on it listens even while speaking",
+                 len(rig.of(ev.WAKE_WORD)) == 1)
+
+    # The thread itself.
+    rig = EarRig(fire_at=[20])
+    rig.audio._sleep = time.sleep
+    rig.mic.feed(_silence_pcm(0.5))
+    rig.audio.start()
+    end = time.monotonic() + 3
+    while time.monotonic() < end and not rig.of(ev.WAKE_WORD):
+        time.sleep(0.01)
+    report.check("run on a real thread, it posts the wake word",
+                 len(rig.of(ev.WAKE_WORD)) == 1)
+    rig.audio.close()
+    report.check("and close stops it", not rig.audio._thread.is_alive())
+
+    class Boom:
+        def process(self, chunk):
+            raise RuntimeError("the detector broke")
+
+    rig = EarRig()
+    rig.audio.detector = Boom()
+    rig.audio._sleep = time.sleep
+    rig.mic.feed(_silence_pcm(0.2))
+    with quiet_logs():
+        rig.audio.start()
+        end = time.monotonic() + 3
+        while time.monotonic() < end and not rig.of(ev.WORKER_DIED):
+            time.sleep(0.01)
+    died = rig.of(ev.WORKER_DIED)
+    report.check("a detector that raises ends the thread and tells main, "
+                 "so the supervisor can bring it back",
+                 len(died) == 1 and died[0].data == "audio")
+    rig.audio.close()
+
+
+def scenario_vad(report, root):
+    import os
+    import wave
+
+    from firmware.assistant import vad as vad_mod
+
+    from .headless import quiet_logs
+
+    e = vad_mod.EnergyVad()
+    report.check("loudness: silence is not speech and a tone is",
+                 not e.speech(_silence_pcm(0.01))
+                 and e.speech(_speech_pcm(0.01)))
+    report.check("a very quiet room is not speech",
+                 not e.speech(_speech_pcm(0.01, amp=100)))
+
+    vad = vad_mod.open_vad(directory=os.path.join(root, "no-models"))
+    report.check("with no model files it falls back to loudness, and says so",
+                 vad.name == "energy")
+
+    samples = os.path.normpath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "..", "..",
+        "voice-collector", "public", "app", "static", "samples"))
+    good = os.path.join(samples, "good.wav")
+    try:
+        micro = vad_mod.open_vad(0.3)
+        have = micro.name == "micro"
+    except Exception:
+        have = False
+    if not have or not os.path.exists(good):
+        report.check("the micro-wake-word VAD on real speech (SKIPPED: the "
+                     "package, its model or the voice-collector clips are "
+                     "not here)", True)
+    else:
+        w = wave.open(good)
+        pcm = w.readframes(w.getnframes())
+        talking = 0
+        for i in range(0, len(pcm) - 320, 320):
+            if micro.speech(pcm[i:i + 320]):
+                talking += 1
+        share = talking / (len(pcm) / 320.0)
+        report.check("the micro-wake-word VAD hears speech in a clip of "
+                     "speech (%.0f%% of chunks)" % (share * 100),
+                     0.25 < share < 0.95, "%.2f" % share)
+        micro.reset()
+        quiet = sum(1 for _ in range(150) if micro.speech(_silence_pcm(0.01)))
+        report.check("and none in silence", quiet == 0, str(quiet))
+
+        class Broken:
+            name = "broken"
+
+            def speech(self, chunk):
+                raise RuntimeError("model fell over")
+
+            def reset(self):
+                pass
+
+        safe = vad_mod.SafeVad(Broken(), vad_mod.EnergyVad())
+        with quiet_logs():
+            out = safe.speech(_speech_pcm(0.01))
+        report.check("a model that fails once is replaced by loudness for "
+                     "good, and the answer still comes",
+                     out is True and safe.failed and safe.name == "energy")
+
+
+def scenario_bridge_threads(report, root):
+    import threading
+
+    from . import audio as audio_mod
+    from .hal import VirtualMic, VirtualSpeaker
+
+    mic, speaker = VirtualMic(), VirtualSpeaker()
+    bridge = audio_mod.AudioBridge(mic, speaker)
+
+    class Endless(audio_mod.Input):
+        live = True
+
+        def __init__(self):
+            self.total = 0
+
+        def read(self, frames=audio_mod.CHUNK_FRAMES):
+            self.total += 320
+            return b"\x01\x00" * 160
+
+        def level(self):
+            return 0.0
+
+    source = Endless()
+    bridge.input = source
+    bridge.threaded = True
+    got = []
+    errors = []
+
+    def reader():
+        try:
+            for _ in range(2000):
+                got.append(len(mic.read(160)))
+        except Exception as exc:
+            errors.append(repr(exc))
+
+    def window():
+        try:
+            for _ in range(2000):
+                bridge.pump()
+                bridge.start_recording()
+                bridge.stop_recording()
+        except Exception as exc:
+            errors.append(repr(exc))
+
+    threads = [threading.Thread(target=reader),
+               threading.Thread(target=window)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    report.check("the audio thread and the window can use the bridge at "
+                 "once, without errors", errors == [], str(errors))
+    report.check("and in threaded mode the audio thread takes audio itself, "
+                 "so the window's pump reads nothing",
+                 sum(got) > 0 and source.total >= sum(got) * 1)

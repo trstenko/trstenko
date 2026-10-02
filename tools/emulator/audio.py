@@ -614,6 +614,13 @@ class AudioBridge:
         # What the mic heard during this turn, for the parrot reply below.
         self.recording = bytearray()
         self._recording = False
+        # The assistant's audio thread reads the mic on a thread of its own,
+        # while the window's thread pumps it, so the buffers have one lock. And
+        # when that thread is the reader (`threaded`), it takes audio itself
+        # in `take`, and the window must not also read the same input: each
+        # would get half of every sentence.
+        self._lock = threading.RLock()
+        self.threaded = False
         # Audio pumped out of the ring and not yet read by the firmware. Held
         # for it rather than drained twice, and capped: a device that has
         # stopped reading gains nothing from a growing backlog.
@@ -664,11 +671,12 @@ class AudioBridge:
     # ---- capture ----
 
     def start_recording(self):
-        self._drain()
-        keep = int(RATE * PREROLL_SECONDS) * SAMPLE_BYTES
-        self.recording = bytearray(self._pending[-keep:])
-        del self._pending[:]
-        self._recording = True
+        with self._lock:
+            self._drain()
+            keep = int(RATE * PREROLL_SECONDS) * SAMPLE_BYTES
+            self.recording = bytearray(self._pending[-keep:])
+            del self._pending[:]
+            self._recording = True
 
     def _drain(self):
         """Empty the backend's ring into the pending buffer.
@@ -685,8 +693,9 @@ class AudioBridge:
             self._pending += pcm
 
     def stop_recording(self):
-        self._recording = False
-        return bytes(self.recording)
+        with self._lock:
+            self._recording = False
+            return bytes(self.recording)
 
     def pump(self):
         """Once a frame: move audio and level from the backend into the mic
@@ -696,8 +705,12 @@ class AudioBridge:
         emulator must produce nothing at all -- not silence that still counts
         as a working device.
         """
-        if not self.mic.powered:
+        if not self.mic.powered or self.threaded:
             return
+        with self._lock:
+            self._pump_locked()
+
+    def _pump_locked(self):
         # Take everything waiting, not a fixed 40ms. A frame that ran long
         # -- a redraw, an update check -- otherwise leaves a backlog the next
         # frames never catch up with, and the ring drops the oldest audio.
@@ -715,8 +728,11 @@ class AudioBridge:
     def take(self, frames):
         """What `VirtualMic.read` hands the firmware."""
         want = int(frames) * SAMPLE_BYTES
-        out = bytes(self._pending[:want])
-        del self._pending[:want]
+        with self._lock:
+            if self.threaded and len(self._pending) < want                     and self.mic.powered:
+                self._pump_locked()
+            out = bytes(self._pending[:want])
+            del self._pending[:want]
         return out
 
     def test_tone(self):

@@ -8,5 +8,20 @@
   "memory_full": "Moj spomin je poln. Najprej me prosi, naj kaj pozabim.",
   "memory_secret": "Tega si ne morem zapomniti, ker je videti kot geslo ali ključ.",
   "memory_forgot": "V redu, pozabljeno.",
-  "memory_none": "Česa takega se ne spomnim."
+  "memory_none": "Česa takega se ne spomnim.",
+
+  "err_network": "Trenutno ne morem do interneta.",
+  "err_auth": "Moj API ključ ne deluje. Popravite ga na strani za nastavitve.",
+  "err_rate_limited": "Storitev umetne inteligence je zasedena. Poskusite čez trenutek.",
+  "err_quota": "Vaš račun za umetno inteligenco nima več kredita ali je presegel omejitev.",
+  "err_budget_month": "Dosegli ste omejitev porabe, ki ste jo nastavili za ta mesec.",
+  "err_budget_day": "Dosegli ste omejitev porabe, ki ste jo nastavili za danes.",
+  "err_turns": "Dosegli ste število vprašanj, ki ste ga nastavili za danes.",
+  "err_timeout": "To je trajalo predolgo. Poskusite znova.",
+  "err_generic": "Nekaj je šlo narobe. Poskusite znova.",
+  "err_no_key": "Preden lahko odgovorim, potrebujem API ključ. Dodate ga lahko na strani za nastavitve.",
+  "err_stuck": "Oprostite, s tem imam težave.",
+  "short_version": "To je kratka različica.",
+  "budget_warning_month": "Opozorilo: porabili ste 80 odstotkov mesečnega proračuna za umetno inteligenco.",
+  "budget_warning_day": "Opozorilo: porabili ste 80 odstotkov današnjega proračuna za umetno inteligenco."
 }

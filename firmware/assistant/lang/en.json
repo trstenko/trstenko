@@ -8,5 +8,20 @@
   "memory_full": "My memory is full. Ask me to forget something first.",
   "memory_secret": "I can't remember that, it looks like a password or a key.",
   "memory_forgot": "Okay, I've forgotten that.",
-  "memory_none": "I don't remember anything like that."
+  "memory_none": "I don't remember anything like that.",
+
+  "err_network": "I can't reach the internet right now.",
+  "err_auth": "My API key isn't working. You can fix it on the setup page.",
+  "err_rate_limited": "The AI service is busy. Try again in a moment.",
+  "err_quota": "Your AI account is out of credit or over its limit.",
+  "err_budget_month": "You've reached the spending limit you set for this month.",
+  "err_budget_day": "You've reached the spending limit you set for today.",
+  "err_turns": "You've reached the number of questions you set for today.",
+  "err_timeout": "That took too long. Please try again.",
+  "err_generic": "Something went wrong. Please try again.",
+  "err_no_key": "I need an API key before I can answer. You can add one on the setup page.",
+  "err_stuck": "Sorry, I got stuck on that one.",
+  "short_version": "That's the short version.",
+  "budget_warning_month": "Heads up: you've used 80 percent of this month's AI budget.",
+  "budget_warning_day": "Heads up: you've used 80 percent of today's AI budget."
 }

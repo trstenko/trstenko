@@ -306,6 +306,29 @@ class StreamAssembler:
                           self.finish_reason)
 
 
+def retry_pause(err, attempt, deadline, cancel, delivered=False, rng=random):
+    """How long to wait before the one retry plan 05 allows, or None for no
+    retry. Shared by everything that talks to a provider, so a speech-to-text
+    request and a chat request fail the same way.
+
+    Only once, never after something has been delivered (a retry would say the
+    first words twice), never for a key, a quota or our own bad request, and
+    never if the turn would have no time left to use the answer."""
+    if attempt >= 2 or delivered or err.partial or cancel.is_set():
+        return None
+    if err.kind == RATE_LIMITED:
+        if err.retry_after is None or err.retry_after > RETRY_AFTER_MAX:
+            return None
+        pause = err.retry_after + rng.random() * RETRY_JITTER
+    elif err.kind in (SERVER, NETWORK, TIMEOUT):
+        pause = RETRY_PAUSE
+    else:
+        return None
+    if deadline.remaining() < pause + MIN_TRY:
+        return None
+    return pause
+
+
 class ChatClient:
     """Talks to one provider. Holds no key: `key_fn` is asked for it at the
     moment of the request, so it lives in the secrets store and in one request
@@ -358,20 +381,8 @@ class ChatClient:
                     raise ProviderError(CANCELLED, "the turn was ended")
 
     def _retry_pause(self, err, attempt, deadline, cancel, delivered):
-        """How long to wait before the one retry, or None for no retry."""
-        if attempt >= 2 or delivered or err.partial or cancel.is_set():
-            return None
-        if err.kind == RATE_LIMITED:
-            if err.retry_after is None or err.retry_after > RETRY_AFTER_MAX:
-                return None
-            pause = err.retry_after + self._rng.random() * RETRY_JITTER
-        elif err.kind in (SERVER, NETWORK, TIMEOUT):
-            pause = RETRY_PAUSE
-        else:
-            return None
-        if deadline.remaining() < pause + MIN_TRY:
-            return None
-        return pause
+        return retry_pause(err, attempt, deadline, cancel, delivered,
+                           self._rng)
 
     # ---- one HTTP request ----
 

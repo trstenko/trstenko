@@ -303,9 +303,12 @@ class Meter:
             self.turns_day += 1
             return Verdict()
 
-    def allow(self, provider, model, est_input, max_output):
+    def allow(self, provider, model, est_input, max_output,
+              audio_seconds=0.0):
         """May this request be made? Checks the provider's cooldown, then the
-        owner's money limits against the worst case for this request."""
+        owner's money limits against the worst case for this request.
+        `audio_seconds` is for a speech-to-text request, which is priced by the
+        length of the audio and not by tokens."""
         with self._lock:
             self._roll()
             wait = self._cooldown_left(provider)
@@ -315,7 +318,8 @@ class Meter:
             limits = self._limits()
             worst = self._cost(provider, model, limits.get("free_tier"),
                                input_tokens=est_input,
-                               output_tokens=max_output) or 0
+                               output_tokens=max_output,
+                               audio_seconds=audio_seconds) or 0
             daily, monthly = limits.get("daily_usd"), limits.get("monthly_usd")
             if daily is not None and self.spent_day + worst > _micro(daily):
                 self._note_reached("day:%s" % self._day, "daily spending limit")

@@ -37,6 +37,10 @@ DEFAULTS = {
     "owner": {"name": "", "language": "en", "timezone": "Europe/Ljubljana",
               "location": ""},
     "assistant": {"provider": "gemini", "model": "", "fallback_provider": "",
+                  # Who turns speech into text when the chosen provider cannot
+                  # (Ollama, Grok): empty means the first provider with a key
+                  # that can (plan 04).
+                  "stt_provider": "",
                   # Whether the key is on a provider's free tier. The device
                   # cannot tell from the key, and a wrong guess is a budget
                   # that either stops a free user or never stops a paying one,
@@ -80,6 +84,7 @@ RULES = {
     ("assistant", "provider"): ("choice", PROVIDERS),
     ("assistant", "model"): ("text", 80),
     ("assistant", "fallback_provider"): ("choice", ("",) + PROVIDERS),
+    ("assistant", "stt_provider"): ("choice", ("",) + PROVIDERS),
     ("assistant", "free_tier"): ("bool",),
     ("assistant", "conversation_log"): ("bool",),
     ("assistant", "memories_in_prompt_tokens"): ("int", 0, 2000),

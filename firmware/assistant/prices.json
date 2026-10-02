@@ -1,0 +1,17 @@
+{
+  "updated": "2026-10-02",
+  "usd_to_eur": 0.92,
+  "models": {
+    "openai/gpt-5-mini": {"in": 0.25, "cached": 0.025, "out": 2.00},
+    "openai/gpt-5-nano": {"in": 0.05, "cached": 0.005, "out": 0.40},
+    "openai/gpt-4o-mini-transcribe": {"per_minute": 0.003},
+    "gemini/gemini-3.5-flash-lite": {"in": 0.30, "cached": 0.03, "out": 2.50, "free_tier": true},
+    "gemini/gemini-3.8-flash": {
+      "in": 0.75, "cached": 0.075, "out": 3.75, "free_tier": true,
+      "changes": {"2027-01-01": {"in": 1.50, "cached": 0.15, "out": 7.50}}
+    },
+    "xai/grok-4.20-0309-non-reasoning": {"in": 1.25, "out": 2.50},
+    "groq/openai/gpt-oss-20b": {"in": 0.075, "out": 0.30, "free_tier": true},
+    "groq/whisper-large-v3-turbo": {"per_hour": 0.04, "free_tier": true}
+  }
+}

@@ -3623,9 +3623,13 @@ def scenario_web_servers(report, root):
 
 
 def main(argv=None):
+    from . import assistant_scenarios as asst
+
     root = tempfile.mkdtemp(prefix="trstenko-headless-")
     report = Report()
     scenarios = [
+        ("the provider table", asst.scenario_tables),
+        ("what things cost", asst.scenario_prices),
         ("the event queue", scenario_events),
         ("the device on a fake clock", scenario_fake_clock),
         ("frame rates", scenario_frame_rates),

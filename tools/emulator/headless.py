@@ -3630,6 +3630,12 @@ def main(argv=None):
     scenarios = [
         ("the provider table", asst.scenario_tables),
         ("what things cost", asst.scenario_prices),
+        ("counting the cost", asst.scenario_meter_costs),
+        ("budgets and midnight", asst.scenario_meter_budgets),
+        ("cooldowns, quota and rate limits", asst.scenario_meter_cooldowns),
+        ("the meter from several threads", asst.scenario_meter_threads),
+        ("the meter fed by the real client", asst.scenario_meter_with_client),
+        ("the meter's chores", asst.scenario_meter_chores),
         ("the model client: replies", asst.scenario_provider_replies),
         ("the model client: tool calls", asst.scenario_provider_tools),
         ("the model client: telling failures apart",

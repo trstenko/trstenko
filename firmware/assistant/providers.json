@@ -14,7 +14,8 @@
     "stt": null,
     "free_tier": {
       "note": "about 500 requests a day on Flash-Lite",
-      "quota_url": "https://aistudio.google.com/"
+      "quota_url": "https://aistudio.google.com/",
+      "resets_tz": "America/Los_Angeles"
     },
     "languages": ["en", "sl"],
     "key_help_url": "https://aistudio.google.com/apikey",

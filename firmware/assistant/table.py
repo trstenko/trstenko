@@ -175,10 +175,15 @@ def check_provider(name, row):
 
     free = row["free_tier"]
     if free is not None:
-        if (not isinstance(free, dict) or set(free) != {"note", "quota_url"}
+        if (not isinstance(free, dict)
+                or not {"note", "quota_url"} <= set(free)
+                or set(free) - {"note", "quota_url", "resets_tz"}
                 or not _text(free.get("note"))
                 or not str(free.get("quota_url", "")).startswith("https://")):
-            bad("free_tier", "must be null or a note and an https quota_url")
+            bad("free_tier", "must be null or a note and an https quota_url, "
+                             "and optionally resets_tz")
+        elif "resets_tz" in free and not _text(free["resets_tz"]):
+            bad("free_tier", "resets_tz must be a timezone name")
 
     langs = row["languages"]
     if (not isinstance(langs, list) or "en" not in langs
@@ -377,6 +382,25 @@ def check_prices(data):
             if not _DAY.match(day):
                 problems.append("%s: change date %r is not a day" % (where, day))
             problems += _price_problems("%s change %s" % (where, day), new)
+    return problems
+
+
+def zone_problems(providers):
+    """Timezone names in the table that this machine does not know. Checked in
+    CI and not at boot: a device with no timezone database should lose the
+    reset time of a free quota, not its assistant."""
+    from zoneinfo import ZoneInfo
+
+    problems = []
+    for name in providers.names():
+        free = providers.get(name).free_tier
+        zone = free.get("resets_tz") if free else None
+        if zone:
+            try:
+                ZoneInfo(zone)
+            except Exception:
+                problems.append("provider %s: %s is not a timezone"
+                                % (name, zone))
     return problems
 
 

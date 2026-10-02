@@ -132,7 +132,8 @@ def check_assistant_tables():
         return ["firmware/assistant: %s" % problem
                 for problem in str(exc).split("; ")]
     problems += ["firmware/assistant: %s" % p
-                 for p in table.cross_check(providers, prices)]
+                 for p in table.cross_check(providers, prices)
+                 + table.zone_problems(providers)]
     return problems
 
 

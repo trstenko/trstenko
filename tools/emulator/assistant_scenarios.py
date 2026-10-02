@@ -997,3 +997,542 @@ def close_all():
     """Anything a scenario left running, for the end of the run."""
     for fake in list(Fake.open_fakes):
         fake.close()
+
+
+# ---- the meter (plan 05) ----
+
+def _epoch(year, month, day, hour=12, minute=0, tz="Europe/Ljubljana"):
+    import datetime
+
+    from firmware.scheduler import clock as sched_clock
+
+    return sched_clock.to_epoch(datetime.datetime(year, month, day, hour,
+                                                  minute), tz)
+
+
+def _attempt(provider="openai", model="gpt-5-mini", status="ok", http=200,
+             usage=None, latency=800, request_chars=0, received_chars=0,
+             retry_after=None, ambiguous=False, ratelimit=None):
+    attempt = prov.Attempt(provider, model)
+    attempt.status = status
+    attempt.http_status = http
+    attempt.usage = usage
+    attempt.latency_ms = latency
+    attempt.request_chars = request_chars
+    attempt.received_chars = received_chars
+    attempt.retry_after = retry_after
+    attempt.ambiguous = ambiguous
+    attempt.ratelimit = ratelimit or {}
+    return attempt
+
+
+class MeterRig:
+    """A meter on a clock you move, with a real database to write to."""
+
+    def __init__(self, root, name, wall=None, **limits):
+        import os
+
+        from firmware.assistant import meter as meter_mod
+        from firmware.storage import Database
+        from firmware.storage import migrate as migrate_mod
+
+        from .clock import FakeClock
+
+        self.root, self.name = root, name
+        self.clock = FakeClock(mono=100.0, wall=wall or _epoch(2026, 10, 2))
+        self.limits = {"monthly_usd": 5.0, "daily_usd": None,
+                       "daily_turns": None, "max_output_tokens": 300,
+                       "max_tool_steps": 4, "free_tier": False}
+        self.limits.update(limits)
+        self.tz = "Europe/Ljubljana"
+        self.db = Database(os.path.join(root, name, "trstenko.db"))
+        migrate_mod.migrate(self.db)
+        self.providers = table.load_providers()
+        self.prices = table.load_prices()
+        self.meter = meter_mod.Meter(
+            self.prices, lambda: self.limits, lambda: self.tz,
+            self.clock.mono, self.clock.wall, providers=self.providers)
+        self.meter.load(self.db)
+
+    def record(self, attempt, turn="t1", **kw):
+        return self.meter.record(attempt, turn, **kw)
+
+    def rows(self):
+        self.meter.flush(self.db)
+        return [dict(r) for r in self.db.conn().execute(
+            "SELECT * FROM usage ORDER BY id")]
+
+    def events(self):
+        self.meter.flush(self.db)
+        return [(r["kind"], r["detail"]) for r in self.db.conn().execute(
+            "SELECT kind, detail FROM events_log ORDER BY id")]
+
+    def reboot(self):
+        self.meter.flush(self.db)
+        self.db.close()
+        return MeterRig(self.root, self.name, wall=self.clock.wall(),
+                        **{k: v for k, v in self.limits.items()
+                           if k in ("monthly_usd", "daily_usd",
+                                    "daily_turns", "free_tier")})
+
+    def close(self):
+        self.db.close()
+
+
+def scenario_meter_costs(report, root):
+    rig = MeterRig(root, "costs")
+    try:
+        row = rig.record(_attempt(usage=prov.Usage(3000, 0, 160)))
+        report.check("a typical turn on gpt-5-mini is priced from its usage",
+                     row["cost_usd_micro"] == 1070
+                     and row["input_tokens"] == 3000
+                     and row["estimated"] == 0, str(row))
+        row = rig.record(_attempt(usage=prov.Usage(3000, 2000, 160, 40)))
+        report.check("cached tokens are charged at the cached rate and "
+                     "reasoning tokens are counted inside the output",
+                     row["cost_usd_micro"] == 1000 * 0.25 + 2000 * 0.025
+                     + 160 * 2.0 and row["reasoning_tokens"] == 40
+                     and row["cached_tokens"] == 2000, str(row))
+        report.check("the totals follow",
+                     rig.meter.spent_day == 1070 + 620
+                     and rig.meter.spent_month == 1070 + 620
+                     and rig.meter.requests_day == 2)
+
+        row = rig.record(_attempt(request_chars=4000, received_chars=200))
+        report.check("a stream cut before its usage is estimated, and billed: "
+                     "the provider paid for what it generated",
+                     row["estimated"] == 1 and row["input_tokens"] == 1000
+                     and row["output_tokens"] == 50
+                     and row["cost_usd_micro"] == 250 + 100, str(row))
+        row = rig.record(_attempt(status="cancelled",
+                                  request_chars=2000, received_chars=40))
+        report.check("a cancelled turn is billed too",
+                     row["estimated"] == 1 and row["cost_usd_micro"] > 0
+                     and row["status"] == "cancelled")
+        for status, http in (("auth", 401), ("rate_limited", 429),
+                             ("quota", 429), ("error", 500)):
+            row = rig.record(_attempt(status=status, http=http,
+                                      request_chars=4000))
+            report.check("a %s answer costs nothing: it was refused before "
+                         "any work" % status, row["cost_usd_micro"] == 0
+                         and row["input_tokens"] == 0, str(row))
+        row = rig.record(_attempt(status="error", http=None,
+                                  request_chars=4000))
+        report.check("nor does a request that never reached the provider",
+                     row["cost_usd_micro"] == 0)
+
+        row = rig.record(_attempt("openai", "gpt-4o-mini-transcribe"),
+                         kind="stt", audio_seconds=5.0)
+        report.check("speech to text is priced from the seconds of audio",
+                     row["cost_usd_micro"] == 250 and row["kind"] == "stt"
+                     and row["audio_seconds"] == 5.0, str(row))
+
+        row = rig.record(_attempt("openai", "gpt-9",
+                                  usage=prov.Usage(100, 0, 10)))
+        report.check("a model with no price costs nothing on paper, and the "
+                     "page is told the budget cannot count it",
+                     row["cost_usd_micro"] == 0
+                     and rig.meter.summary()["unpriced_models"]
+                     == ["openai/gpt-9"])
+
+        rig.limits["free_tier"] = True
+        row = rig.record(_attempt("gemini", "gemini-3.5-flash-lite",
+                                  usage=prov.Usage(3000, 0, 160)))
+        report.check("on the owner's free tier the cost is zero and the row "
+                     "says so",
+                     row["cost_usd_micro"] == 0 and row["free_tier"] == 1)
+        row = rig.record(_attempt("openai", "gpt-5-mini",
+                                  usage=prov.Usage(3000, 0, 160)))
+        report.check("but only for a model that has one",
+                     row["cost_usd_micro"] == 1070 and row["free_tier"] == 0)
+        rig.limits["free_tier"] = False
+
+        rows = rig.rows()
+        report.check("every request became a row, in order, flushed in one "
+                     "batch",
+                     len(rows) == 13 and rows[0]["input_tokens"] == 3000
+                     and rows[0]["day"] == "2026-10-02"
+                     and rows[0]["provider"] == "openai", str(len(rows)))
+        report.check("and nothing waits to be written afterwards",
+                     rig.meter.flush(rig.db) == 0)
+
+        again = rig.reboot()
+        report.check("a reboot loads the totals from what was stored",
+                     again.meter.spent_month == rig.meter.spent_month
+                     and again.meter.spent_day == rig.meter.spent_day
+                     and again.meter.requests_day == 13, str(
+                         (again.meter.spent_month, rig.meter.spent_month)))
+        again.close()
+    finally:
+        rig.close()
+
+
+def scenario_meter_budgets(report, root):
+    from firmware.assistant import meter as meter_mod
+
+    rig = MeterRig(root, "budget", monthly_usd=0.002)
+    try:
+        # about 1000 tokens in, 300 out allowed: 250 + 600 = 850 micro-dollars
+        ask = ("openai", "gpt-5-mini", 1000, 300)
+        report.check("a request that fits is allowed",
+                     rig.meter.allow(*ask).ok)
+        rig.record(_attempt(usage=prov.Usage(2000, 0, 100)))     # 700
+        rig.record(_attempt(usage=prov.Usage(2000, 0, 100)))     # 700
+        verdict = rig.meter.allow(*ask)
+        report.check("700 + 700 spent, and 850 more could be needed: refused "
+                     "before it is sent, as 2000 is the limit",
+                     not verdict.ok and verdict.reason
+                     == meter_mod.MONTHLY_BUDGET, repr(verdict))
+        small = rig.meter.allow("openai", "gpt-5-mini", 100, 20)
+        report.check("a smaller request that still fits is allowed",
+                     small.ok, repr(small))
+
+        rig.limits["monthly_usd"] = None
+        rig.limits["daily_usd"] = 0.0015
+        verdict = rig.meter.allow(*ask)
+        report.check("the daily limit stops a runaway day the same way",
+                     not verdict.ok
+                     and verdict.reason == meter_mod.DAILY_BUDGET,
+                     repr(verdict))
+        rig.limits["daily_usd"] = None
+        report.check("with no limits nothing is refused",
+                     rig.meter.allow(*ask).ok)
+        rig.limits["monthly_usd"] = 0.002
+        report.check("a limit changed on the page applies to the very next "
+                     "request", not rig.meter.allow(*ask).ok)
+
+        rig.limits["free_tier"] = True
+        report.check("a free-tier model is never held by money",
+                     rig.meter.allow("gemini", "gemini-3.5-flash-lite",
+                                     100000, 300).ok)
+        rig.limits["free_tier"] = False
+    finally:
+        rig.close()
+
+    rig = MeterRig(root, "warn", monthly_usd=0.001)
+    try:
+        report.check("no warning while the spending is low",
+                     rig.meter.take_warning() is None)
+        rig.record(_attempt(usage=prov.Usage(2000, 0, 0)))       # 500 of 1000
+        report.check("still none at half", rig.meter.take_warning() is None)
+        rig.record(_attempt(usage=prov.Usage(1400, 0, 0)))       # 850
+        report.check("at 85% it warns",
+                     rig.meter.take_warning() == "budget_month")
+        report.check("and says it once, not on every turn",
+                     rig.meter.take_warning() is None)
+        again = rig.reboot()
+        report.check("and not again after a reboot",
+                     again.meter.take_warning() is None)
+        again.close()
+    finally:
+        rig.close()
+
+    rig = MeterRig(root, "turns", daily_turns=2)
+    try:
+        report.check("the first two turns of the day are allowed",
+                     rig.meter.begin_turn("a").ok
+                     and rig.meter.begin_turn("b").ok)
+        verdict = rig.meter.begin_turn("c")
+        report.check("the third is refused: the owner's daily turn limit",
+                     not verdict.ok
+                     and verdict.reason == meter_mod.DAILY_TURNS)
+        rig.clock.advance(13 * 3600)
+        report.check("and the next day starts again",
+                     rig.meter.begin_turn("d").ok
+                     and rig.meter.turns_day == 1)
+    finally:
+        rig.close()
+
+    rig = MeterRig(root, "midnight", wall=_epoch(2026, 10, 15, 23, 58),
+                   monthly_usd=5.0, daily_usd=1.0)
+    try:
+        rig.record(_attempt(usage=prov.Usage(3000, 0, 160)))
+        rig.meter.begin_turn("t")
+        report.check("before midnight the day has spent something",
+                     rig.meter.spent_day > 0 and rig.meter.turns_day == 1)
+        rig.clock.advance(180)
+        summary = rig.meter.summary()
+        report.check("after the owner's midnight the daily counters restart, "
+                     "the month's go on",
+                     summary["day"]["spent_usd"] == 0
+                     and summary["turns_today"] == 0
+                     and summary["month"]["spent_usd"] > 0, str(summary))
+        rig.clock.advance(17 * 24 * 3600)
+        report.check("and on the first of the month it restarts too",
+                     rig.meter.summary()["month"]["spent_usd"] == 0)
+        rig.record(_attempt(usage=prov.Usage(3000, 0, 160)))
+        rig.rows()
+        rolled = rig.meter.rollup(rig.db)
+        daily = [dict(r) for r in rig.db.conn().execute(
+            "SELECT * FROM usage_daily ORDER BY day")]
+        report.check("past days are rolled up into usage_daily, which "
+                     "outlives the rows",
+                     rolled >= 1 and daily and daily[0]["day"] == "2026-10-15"
+                     and daily[0]["requests"] == 1
+                     and daily[0]["cost_usd_micro"] == 1070, str(daily))
+        report.check("and rolling up again changes nothing",
+                     rig.meter.rollup(rig.db) == rolled
+                     and len(rig.db.conn().execute(
+                         "SELECT * FROM usage_daily").fetchall())
+                     == len(daily))
+    finally:
+        rig.close()
+
+    rig = MeterRig(root, "pending")
+    try:
+        rig.record(_attempt(usage=prov.Usage(10, 0, 1)))
+        rig.db.conn().execute("ALTER TABLE usage RENAME TO usage_gone")
+        wrote = rig.meter.flush(rig.db)
+        report.check("a database that will not take the rows keeps them for "
+                     "the next try",
+                     wrote == 0 and len(rig.meter._pending) == 1)
+        rig.db.conn().execute("ALTER TABLE usage_gone RENAME TO usage")
+        report.check("and writes them when it can",
+                     rig.meter.flush(rig.db) == 1
+                     and len(rig.rows()) == 1)
+        for _ in range(meter_mod.PENDING_MAX + 50):
+            rig.meter._pending.append(rig.meter._pending[0] if
+                                      rig.meter._pending else ())
+        rig.record(_attempt(usage=prov.Usage(10, 0, 1)))
+        report.check("what waits is bounded, so a full card is not a full "
+                     "memory",
+                     len(rig.meter._pending) <= meter_mod.PENDING_MAX)
+    finally:
+        rig.close()
+
+
+def scenario_meter_cooldowns(report, root):
+    from firmware.assistant import meter as meter_mod
+
+    rig = MeterRig(root, "cool")
+    try:
+        ask = ("openai", "gpt-5-mini", 1000, 300)
+        rig.record(_attempt(status="rate_limited", http=429, retry_after=30))
+        verdict = rig.meter.allow(*ask)
+        report.check("a 30 second Retry-After holds the next turn off, and "
+                     "says how long",
+                     not verdict.ok and verdict.reason
+                     == meter_mod.RATE_LIMITED
+                     and 29 <= verdict.wait <= 30, repr(verdict))
+        report.check("the cooldown is for that provider only",
+                     rig.meter.allow("gemini", "gemini-3.5-flash-lite",
+                                     1000, 300).ok)
+        rig.clock.advance(31)
+        report.check("and ends on time", rig.meter.allow(*ask).ok)
+
+        rig.record(_attempt(usage=prov.Usage(10, 0, 1)))
+        waits = []
+        for _ in range(8):
+            rig.record(_attempt(status="rate_limited", http=429))
+            waits.append(round(rig.meter.cooldown("openai")))
+            rig.clock.advance(rig.meter.cooldown("openai") + 0.1)
+        report.check("with no hint, repeated limits back off 2, 4, 8 ... up "
+                     "to 60 seconds", waits == [2, 4, 8, 16, 32, 60, 60, 60],
+                     str(waits))
+        rig.record(_attempt(usage=prov.Usage(10, 0, 1)))
+        rig.record(_attempt(status="rate_limited", http=429))
+        report.check("a good answer starts the back-off over",
+                     round(rig.meter.cooldown("openai")) == 2)
+        rig.clock.advance(5)
+
+        rig.record(_attempt(status="rate_limited", http=429,
+                            ratelimit={"reset_requests": 7.0}))
+        report.check("without Retry-After the reset headers are the wait",
+                     round(rig.meter.cooldown("openai")) == 7)
+        rig.clock.advance(8)
+
+        rig.record(_attempt(usage=prov.Usage(10, 0, 1),
+                            ratelimit={"remaining_requests": 0,
+                                       "reset_requests": 3.0}))
+        report.check("a good answer that used the last request waits before "
+                     "the next turn hits a 429",
+                     round(rig.meter.cooldown("openai")) == 3)
+        rig.clock.advance(4)
+        rig.record(_attempt(usage=prov.Usage(10, 0, 1),
+                            ratelimit={"remaining_tokens": 0}))
+        report.check("so does one that used the last tokens",
+                     rig.meter.cooldown("openai") > 0)
+        rig.clock.advance(5)
+
+        rig.record(_attempt("gemini", "gemini-3.5-flash-lite",
+                            status="rate_limited", http=429,
+                            ambiguous=True))
+        short = rig.meter.cooldown("gemini")
+        report.check("one ambiguous 429 is treated as the short limit",
+                     0 < short <= 2.5, str(short))
+        rig.clock.advance(3)
+        rig.record(_attempt("gemini", "gemini-3.5-flash-lite",
+                            status="rate_limited", http=429,
+                            ambiguous=True))
+        summary = rig.meter.summary()
+        report.check("a second inside a minute means the day's quota",
+                     rig.meter.cooldown("gemini") > 1700
+                     and any(b["kind"] == "quota"
+                             and b["provider"] == "gemini"
+                             for b in summary["banners"]), str(summary))
+        rig.meter.clear("gemini")
+        report.check("changing the key or the limits clears it at once",
+                     rig.meter.allow("gemini", "gemini-3.5-flash-lite",
+                                     1000, 300).ok
+                     and not rig.meter.summary()["banners"])
+
+        rig.record(_attempt("gemini", "gemini-3.5-flash-lite",
+                            status="rate_limited", http=429,
+                            ambiguous=True))
+        rig.clock.advance(120)
+        rig.record(_attempt("gemini", "gemini-3.5-flash-lite",
+                            status="rate_limited", http=429,
+                            ambiguous=True))
+        report.check("two ambiguous ones far apart are two short limits",
+                     rig.meter.cooldown("gemini") < 10)
+        rig.meter.clear()
+
+        rig.record(_attempt(status="quota", http=429))
+        verdict = rig.meter.allow(*ask)
+        report.check("out of credit holds the provider off, for a long time, "
+                     "and puts up a banner",
+                     not verdict.ok and verdict.reason == meter_mod.QUOTA
+                     and verdict.wait > 600
+                     and rig.meter.summary()["banners"][0]["kind"] == "quota")
+        rig.clock.advance(meter_mod.QUOTA_RECHECK + 1)
+        report.check("but not for good: it is tried again after half an hour, "
+                     "in case the owner topped up",
+                     rig.meter.allow(*ask).ok)
+        rig.record(_attempt(usage=prov.Usage(10, 0, 1)))
+        report.check("and a good answer takes the banner down",
+                     not rig.meter.summary()["banners"])
+
+        rig.limits["free_tier"] = True
+        rig.record(_attempt("gemini", "gemini-3.5-flash-lite",
+                            status="quota", http=429))
+        left = rig.meter.cooldown("gemini")
+        until = meter_mod.seconds_until_midnight(
+            rig.clock.wall(), "America/Los_Angeles")
+        report.check("a free tier's daily quota lasts until its reset, which "
+                     "for Gemini is midnight in California",
+                     abs(left - until) < 2 and left > 3600,
+                     "%.1fh against %.1fh" % (left / 3600, until / 3600))
+        rig.limits["free_tier"] = False
+        rig.meter.clear()
+
+        rig.record(_attempt(status="auth", http=401))
+        report.check("a refused key raises a banner, and does not stop "
+                     "turns, since trying is free",
+                     rig.meter.allow(*ask).ok
+                     and rig.meter.summary()["banners"][0]["kind"] == "auth")
+
+        rig.meter.note_fallback("gemini", "openai", "rate_limited")
+        report.check("a fallback is counted for the page",
+                     rig.meter.summary()["fallbacks_today"] == 1)
+
+        kinds = [k for k, _ in rig.events()]
+        report.check("limits and quota errors became lines for the page",
+                     "rate_limit" in kinds and "quota" in kinds
+                     and "auth" in kinds and "fallback" in kinds, str(kinds))
+        report.check("a burst of them is a few lines, not a flood",
+                     kinds.count("rate_limit") < 12, str(kinds.count(
+                         "rate_limit")))
+    finally:
+        rig.close()
+
+
+def scenario_meter_threads(report, root):
+    import threading
+
+    rig = MeterRig(root, "threads", monthly_usd=1000.0)
+    try:
+        def work():
+            for _ in range(200):
+                rig.meter.allow("openai", "gpt-5-mini", 1000, 300)
+                rig.record(_attempt(usage=prov.Usage(1000, 0, 100)))
+        threads = [threading.Thread(target=work) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        each = 1000 * 0.25 + 100 * 2.0
+        report.check("totals from several threads add up exactly",
+                     rig.meter.spent_month == int(800 * each)
+                     and rig.meter.requests_day == 800
+                     and rig.meter.flush(rig.db) == 800,
+                     str(rig.meter.spent_month))
+    finally:
+        rig.close()
+
+
+def scenario_meter_with_client(report, root):
+    """The chain as it will run: the client reports each attempt, the meter
+    counts it."""
+    rig = MeterRig(root, "chain")
+    fake = Fake("openai")
+    try:
+        fake.queue(fp.error(429, "rate_limit_exceeded", retry_after=1),
+                   fp.text("Done.", usage=(3000, 160)))
+        reply = fake.client.chat(
+            "gpt-5-mini", [{"role": "user", "content": "hi"}],
+            deadline=transport.Deadline(8.0),
+            on_attempt=lambda a: rig.meter.record(a, "turn-1"))
+        rows = rig.rows()
+        report.check("both attempts of a retried request are rows, the failed "
+                     "one free",
+                     isinstance(reply, prov.ModelReply) and len(rows) == 2
+                     and rows[0]["status"] == "rate_limited"
+                     and rows[0]["cost_usd_micro"] == 0
+                     and rows[1]["status"] == "ok"
+                     and rows[1]["cost_usd_micro"] == 1070, str(rows))
+
+        fake.queue(fp.text("one two three four", pieces=4, drop_after=3))
+        try:
+            fake.client.chat(
+                "gpt-5-mini", [{"role": "user", "content": "hi " * 400}],
+                deadline=transport.Deadline(8.0),
+                on_attempt=lambda a: rig.meter.record(a, "turn-2"))
+        except transport.ProviderError:
+            pass
+        last = rig.rows()[-1]
+        report.check("a stream that dies half way is still billed, "
+                     "estimated from what was sent and received",
+                     last["estimated"] == 1 and last["input_tokens"] >= 300
+                     and last["cost_usd_micro"] > 0 and last["status"]
+                     == "error", str(last))
+    finally:
+        fake.close()
+        rig.close()
+
+
+def scenario_meter_chores(report, root):
+    from firmware.assistant import meter as meter_mod
+
+    from .headless import SchedRig
+
+    rig = SchedRig(root, "meterchores")
+    meter = meter_mod.Meter(
+        table.load_prices(),
+        lambda: {"monthly_usd": 5.0, "daily_usd": None, "daily_turns": None,
+                 "free_tier": False},
+        rig.device.timezone, rig.clock.mono, rig.clock.wall,
+        providers=table.load_providers())
+    meter.load(rig.db)
+    meter.register_chores(rig.scheduler.housekeeping, rig.db)
+    rig.run(1.0)
+    meter.record(_attempt(usage=prov.Usage(3000, 0, 160)), "t1")
+    rig.run(10.0)
+    count = lambda: rig.db.conn().execute(
+        "SELECT COUNT(*) FROM usage").fetchone()[0]
+    report.check("usage is not written on every request", count() == 0)
+    rig.run(25.0)
+    report.check("it is written by the scheduler within half a minute, on "
+                 "the main thread", count() == 1)
+
+    from firmware.scheduler import clock as sched_clock
+    import datetime
+
+    midnight = sched_clock.to_epoch(
+        datetime.datetime(2026, 10, 3, 0, 1, 5), "Europe/Ljubljana")
+    rig.advance_to(midnight)
+    rolled = rig.db.conn().execute(
+        "SELECT day, requests, cost_usd_micro FROM usage_daily").fetchall()
+    report.check("after midnight yesterday is rolled up",
+                 [tuple(r) for r in rolled] == [("2026-10-02", 1, 1070)],
+                 str([tuple(r) for r in rolled]))
+    rig.close()

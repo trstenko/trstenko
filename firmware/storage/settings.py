@@ -37,6 +37,12 @@ DEFAULTS = {
     "owner": {"name": "", "language": "en", "timezone": "Europe/Ljubljana",
               "location": ""},
     "assistant": {"provider": "gemini", "model": "", "fallback_provider": "",
+                  # Whether the key is on a provider's free tier. The device
+                  # cannot tell from the key, and a wrong guess is a budget
+                  # that either stops a free user or never stops a paying one,
+                  # so it is the owner's say-so and defaults to counting the
+                  # cost (plan 05).
+                  "free_tier": False,
                   "conversation_log": False, "memories_in_prompt_tokens": 400},
     "voice": {"piper_voice": "en_US-ljspeech-medium", "volume": 0.6,
               "barge_in": False},
@@ -74,6 +80,7 @@ RULES = {
     ("assistant", "provider"): ("choice", PROVIDERS),
     ("assistant", "model"): ("text", 80),
     ("assistant", "fallback_provider"): ("choice", ("",) + PROVIDERS),
+    ("assistant", "free_tier"): ("bool",),
     ("assistant", "conversation_log"): ("bool",),
     ("assistant", "memories_in_prompt_tokens"): ("int", 0, 2000),
 

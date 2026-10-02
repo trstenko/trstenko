@@ -3292,3 +3292,450 @@ def scenario_intents(report, root):
                      and not rig.send("announce.window")["open"])
     finally:
         rig.close()
+
+
+# ---- voices and speaking (plan 03, Finding 14) ----
+
+def scenario_voices(report, root):
+    import copy
+    import os
+
+    from firmware.assistant import voices
+
+    registry = voices.VoiceRegistry.load()
+    report.check("the shipped registry loads, with a default voice for each "
+                 "language",
+                 registry.default_for("en").id == "en_US-ljspeech-medium"
+                 and registry.default_for("sl").id == "sl_SI-artur-medium")
+    report.check("no voice of the research-only kind is in it",
+                 not any("lessac" in v for v in registry.ids()))
+    report.check("the Slovenian voice's credit is on the list for the about "
+                 "page", any("CC BY 4.0" in c["credit"]
+                             for c in registry.credits()))
+
+    with open(voices.VOICES_FILE, encoding="utf-8") as fh:
+        shipped = json.load(fh)
+
+    def broken(vid, change):
+        rows = copy.deepcopy(shipped)
+        change(rows[vid])
+        return voices.check(rows)
+
+    def says(problems, word):
+        return any(word in p for p in problems)
+
+    en = "en_US-ljspeech-medium"
+    report.check("an unknown field is refused",
+                 says(broken(en, lambda r: r.update(pitch=2)), "pitch"))
+    report.check("a missing field is named",
+                 says(broken(en, lambda r: r.pop("licence")), "licence"))
+    report.check("an engine we do not have is refused",
+                 says(broken(en, lambda r: r.update(engine="magic")),
+                      "engine"))
+    report.check("a speed that would be unintelligible is refused",
+                 says(broken(en, lambda r: r.update(speed=5)), "speed"))
+    report.check("a model path that climbs out of the folder is refused",
+                 says(broken(en, lambda r: r.update(model="../x.onnx")),
+                      "plain file name"))
+    report.check("a voice that does not ship cannot be a default",
+                 says(broken(en, lambda r: r.update(ships=False)),
+                      "does not ship"))
+    rows = copy.deepcopy(shipped)
+    rows["extra"] = dict(rows[en], default_for=["en"])
+    report.check("two defaults for a language are refused",
+                 says(voices.check(rows), "both the default"))
+    rows = copy.deepcopy(shipped)
+    del rows["sl_SI-artur-medium"]
+    report.check("a language with no default is refused",
+                 says(voices.check(rows), "default for sl"))
+    err = _raises(voices.VoiceRegistry, {})
+    report.check("an empty registry is an error", isinstance(
+        err, voices.VoiceError))
+
+    folder = os.path.join(root, "voices")
+    os.makedirs(folder, exist_ok=True)
+
+    def install(*names):
+        for name in names:
+            v = registry.get(name)
+            for path in v.files(folder):
+                open(path, "wb").close()
+
+    voice, note = registry.choose(en, "en", folder)
+    report.check("with nothing installed there is nothing to speak with",
+                 voice is None and "missing" in note, note)
+    install(en)
+    voice, note = registry.choose(en, "en", folder)
+    report.check("with the files there, the chosen voice", voice.id == en
+                 and note == "")
+    voice, note = registry.choose("nobody", "en", folder)
+    report.check("an id that is not in the registry falls back to the "
+                 "language default, and says why",
+                 voice.id == en and "not in the registry" in note, note)
+    voice, note = registry.choose("sl_SI-artur-medium", "sl", folder)
+    report.check("a voice whose files are missing falls back too, if any "
+                 "voice for the language is installed",
+                 voice is None, str(voice))
+    voice, note = registry.choose("sl_SI-artur-medium", "en", folder)
+    report.check("a voice that does not speak the language is not used for it",
+                 voice.id == en and "does not speak" in note, note)
+    install("sl_SI-artur-medium")
+    voice, note = registry.choose("sl_SI-artur-medium", "sl", folder)
+    report.check("and with its files there it is chosen", voice.id
+                 == "sl_SI-artur-medium")
+    report.check("speed is the inverse of Piper's length scale",
+                 abs(registry.get(en).length_scale - 1.0) < 1e-9)
+    old = os.environ.pop("TRSTENKO_VOICES", None)
+    try:
+        report.check("the voices folder defaults to the data root's",
+                     voices.voices_dir("/d") == os.path.join("/d", "voices"))
+        os.environ["TRSTENKO_VOICES"] = "/elsewhere"
+        report.check("and can be put elsewhere, off the synced folder",
+                     voices.voices_dir("/d") == "/elsewhere")
+    finally:
+        os.environ.pop("TRSTENKO_VOICES", None)
+        if old is not None:
+            os.environ["TRSTENKO_VOICES"] = old
+
+
+class TtsRig:
+    """A synthesizer talking to the fake Piper, with a queue standing in for
+    the main inbox."""
+
+    def __init__(self, root, name, extra=(), second=False):
+        import os
+        import sys
+
+        from firmware import events as ev
+        from firmware.assistant import tts as tts_mod
+        from firmware.assistant import voices
+
+        from .hal import EmulatedHAL
+
+        self.ev = ev
+        self.folder = os.path.join(root, name)
+        os.makedirs(self.folder, exist_ok=True)
+        self.registry = voices.VoiceRegistry.load()
+        for vid in ("en_US-ljspeech-medium", "sl_SI-artur-medium"):
+            for path in self.registry.get(vid).files(self.folder):
+                open(path, "wb").close()
+        self.inbox = ev.EventQueue()
+        self.hal = EmulatedHAL()
+        self.played = []
+        real = self.hal.speaker.play
+        self.hal.speaker.play = lambda pcm, rate=22050: (
+            self.played.append((time.monotonic(), len(pcm), rate)),
+            real(pcm, rate))
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "fake_piper.py")
+        self.tts = tts_mod.PiperSynthesizer(
+            self.hal.speaker, self.inbox.post, command=[sys.executable],
+            script=script, extra=extra)
+        self.tts.configure(self.registry.get("en_US-ljspeech-medium"),
+                           self.folder)
+        self.events = []
+        self.started = time.monotonic()
+
+    def collect(self):
+        for item in self.inbox.drain(100):
+            self.events.append((time.monotonic(), item.kind, item.data))
+
+    def wait_for(self, kind, seconds=10.0, count=1):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            self.collect()
+            if sum(1 for e in self.events if e[1] == kind) >= count:
+                return True
+            time.sleep(0.02)
+        return False
+
+    def kinds(self):
+        self.collect()
+        return [e[1] for e in self.events]
+
+    def close(self):
+        self.tts.close()
+
+
+def _pcm_bytes(text):
+    """What the fake produces for a line: 60ms a character, 16-bit."""
+    return int(22050 * max(0.1, len(text) * 0.06)) * 2
+
+
+def scenario_tts(report, root):
+    from firmware import events as ev
+
+    rig = TtsRig(root, "tts1")
+    try:
+        rig.tts.start()
+        turn = rig.tts.new_turn_id()
+        rig.tts.say(turn, "Hello there.")
+        rig.tts.finish(turn)
+        ok = rig.wait_for(ev.SPEAKING_DONE)
+        kinds = rig.kinds()
+        report.check("a sentence is made, played, and the turn reported "
+                     "done, in that order",
+                     ok and kinds == [ev.SPEAKING_STARTED, ev.SPEAKING_DONE],
+                     str(kinds))
+        report.check("the audio is exactly what Piper made, at its rate",
+                     len(rig.played) == 1
+                     and rig.played[0][1] == _pcm_bytes("Hello there.")
+                     and rig.played[0][2] == 22050, str(rig.played))
+        report.check("both events name the turn",
+                     rig.events[0][2] == {"turn_id": turn}
+                     and rig.events[1][2] == {"turn_id": turn})
+        report.check("it is ready, and says which voice",
+                     rig.tts.status()["state"] == "ready"
+                     and rig.tts.status()["voice"]
+                     == "en_US-ljspeech-medium")
+
+        rig.events.clear()
+        rig.played.clear()
+        turn = rig.tts.new_turn_id()
+        rig.tts.say(turn, "First one.")
+        rig.tts.say(turn, "Second one here.")
+        rig.tts.finish(turn)
+        rig.wait_for(ev.SPEAKING_DONE)
+        kinds = rig.kinds()
+        report.check("several sentences are one turn: one start, one done, "
+                     "every sentence played in order",
+                     kinds == [ev.SPEAKING_STARTED, ev.SPEAKING_DONE]
+                     and [p[1] for p in rig.played]
+                     == [_pcm_bytes("First one."),
+                         _pcm_bytes("Second one here.")], str(rig.played))
+        report.check("the second does not start until the first has ended: "
+                     "the speaker only plays one thing at a time",
+                     rig.played[1][0] - rig.played[0][0]
+                     >= len("First one.") * 0.06 - 0.05,
+                     "%.2f" % (rig.played[1][0] - rig.played[0][0]))
+
+        rig.events.clear()
+        report.check("an empty sentence is not queued",
+                     rig.tts.say(rig.tts.new_turn_id(), "   ") is False)
+        line = rig.tts.say_line("Reminder: call mum.")
+        rig.wait_for(ev.SPEAKING_DONE)
+        report.check("a whole line, as a reminder is, says and finishes",
+                     line is not None and ev.SPEAKING_DONE in rig.kinds())
+    finally:
+        rig.close()
+
+    rig = TtsRig(root, "tts2", extra=["delay=0.2"])
+    try:
+        rig.tts.start()
+        turn = rig.tts.new_turn_id()
+        long_text = "This is a rather long sentence to hear."
+        rig.tts.say(turn, long_text)
+        rig.tts.finish(turn)
+        rig.wait_for(ev.SPEAKING_STARTED)
+        time.sleep(0.2)
+        rig.tts.cancel()
+        report.check("cancelling stops the speaker at once",
+                     not rig.hal.speaker.is_playing())
+        time.sleep(0.3)
+        report.check("and no done is reported for a turn that was cancelled",
+                     ev.SPEAKING_DONE not in rig.kinds())
+        rig.played.clear()
+        rig.events.clear()
+        turn = rig.tts.new_turn_id()
+        rig.tts.say(turn, "Next.")
+        rig.tts.finish(turn)
+        rig.wait_for(ev.SPEAKING_DONE)
+        report.check("the next turn speaks normally after a cancel",
+                     [p[1] for p in rig.played] == [_pcm_bytes("Next.")],
+                     str(rig.played))
+
+        rig.played.clear()
+        turn = rig.tts.new_turn_id()
+        rig.tts.say(turn, "This one is being made when we stop.")
+        time.sleep(0.05)
+        rig.tts.cancel()
+        turn = rig.tts.new_turn_id()
+        rig.tts.say(turn, "Fresh start.")
+        rig.tts.finish(turn)
+        rig.wait_for(ev.SPEAKING_DONE, count=2)
+        time.sleep(0.3)
+        report.check("a sentence Piper was part-way through when the turn was "
+                     "cancelled is thrown away, not played at the front of "
+                     "the next one",
+                     [p[1] for p in rig.played] == [_pcm_bytes(
+                         "Fresh start.")], str(rig.played))
+        report.check("one process the whole time", rig.tts.restarts == 0)
+    finally:
+        rig.close()
+
+
+def scenario_tts_failures(report, root):
+    from firmware import events as ev
+    from firmware.assistant import tts as tts_mod
+
+    rig = TtsRig(root, "ttsdie", extra=["die_after=1"])
+    try:
+        rig.tts.start()
+        turn = rig.tts.new_turn_id()
+        rig.tts.say(turn, "One.")
+        rig.tts.finish(turn)
+        rig.wait_for(ev.SPEAKING_DONE)
+        turn = rig.tts.new_turn_id()
+        rig.tts.say(turn, "Two.")
+        report.check("a Piper that dies is reported, and the worker with it, "
+                     "so the supervisor can bring it back",
+                     rig.wait_for(ev.TTS_DIED)
+                     and rig.wait_for(ev.WORKER_DIED), str(rig.kinds()))
+        died = [e for e in rig.events if e[1] == ev.WORKER_DIED][0]
+        report.check("the death names the worker",
+                     died[2] == "tts")
+        report.check("and the synthesizer says it is down, and refuses "
+                     "new sentences instead of queueing them for ever",
+                     rig.tts.status()["state"] == "down"
+                     and rig.tts.say("x", "More.") is False)
+        report.check("one death is counted", rig.tts.restarts == 1)
+        rig.tts.extra = []
+        rig.events.clear()
+        rig.tts.start()
+        turn = rig.tts.new_turn_id()
+        rig.tts.say(turn, "Back again.")
+        rig.tts.finish(turn)
+        report.check("starting it again, as the supervisor does, works",
+                     rig.wait_for(ev.SPEAKING_DONE)
+                     and rig.tts.status()["state"] == "ready")
+    finally:
+        rig.close()
+
+    rig = TtsRig(root, "ttsmid", extra=["die_on=boom"])
+    try:
+        rig.tts.start()
+        turn = rig.tts.new_turn_id()
+        rig.tts.say(turn, "A boom sentence.")
+        rig.tts.finish(turn)
+        report.check("a Piper that dies in the middle of a sentence is a "
+                     "death too",
+                     rig.wait_for(ev.TTS_DIED))
+        report.check("and the half sentence is not played",
+                     rig.played == [], str(rig.played))
+    finally:
+        rig.close()
+
+    old = tts_mod.START_TIMEOUT
+    tts_mod.START_TIMEOUT = 0.6
+    rig = TtsRig(root, "ttsslow", extra=["no_handshake"])
+    try:
+        rig.tts.start()
+        report.check("a Piper that never finishes loading is a death, not a "
+                     "device waiting for ever", rig.wait_for(ev.TTS_DIED, 5))
+    finally:
+        tts_mod.START_TIMEOUT = old
+        rig.close()
+
+    rig = TtsRig(root, "ttsstart", extra=["die_at_start"])
+    try:
+        rig.tts.start()
+        report.check("one that dies at once is a death",
+                     rig.wait_for(ev.TTS_DIED, 5))
+    finally:
+        rig.close()
+
+    rig = TtsRig(root, "ttsnovoice")
+    rig.tts.voice = None
+    err = _raises(rig.tts.start)
+    report.check("with no voice installed it refuses to start, saying so",
+                 isinstance(err, tts_mod.TtsUnavailable), repr(err))
+    rig.close()
+
+    rig = TtsRig(root, "ttsclose")
+    try:
+        rig.tts.start()
+        rig.wait_for(ev.SPEAKING_DONE, 0.5)
+        turn = rig.tts.new_turn_id()
+        rig.tts.say(turn, "Speak while closing.")
+        time.sleep(0.2)
+        proc = rig.tts._proc
+        rig.tts.close()
+        report.check("closing stops the speaker and the process, and joins "
+                     "the threads",
+                     proc.poll() is not None
+                     and not any(t.is_alive() for t in rig.tts._threads)
+                     and not rig.hal.speaker.is_playing()
+                     and rig.tts.status()["state"] == "stopped")
+        report.check("and a close is not reported as a death",
+                     ev.TTS_DIED not in rig.kinds())
+    finally:
+        rig.close()
+
+    rig = TtsRig(root, "ttsswitch")
+    try:
+        rig.tts.start()
+        turn = rig.tts.new_turn_id()
+        rig.tts.say(turn, "English.")
+        rig.tts.finish(turn)
+        rig.wait_for(ev.SPEAKING_DONE)
+        first = rig.tts._proc
+        rig.tts.set_voice(rig.registry.get("sl_SI-artur-medium"))
+        turn = rig.tts.new_turn_id()
+        rig.tts.say(turn, "Slovenščina.")
+        rig.tts.finish(turn)
+        rig.wait_for(ev.SPEAKING_DONE, count=2)
+        report.check("switching voice stops the old Piper before the new one "
+                     "runs: never two",
+                     first.poll() is not None
+                     and rig.tts._proc is not first
+                     and rig.tts.status()["voice"] == "sl_SI-artur-medium")
+        report.check("and the new voice speaks",
+                     len(rig.played) == 2)
+    finally:
+        rig.close()
+
+
+def scenario_tts_real(report, root):
+    """The real Piper, if it is installed here. The suite does not need it."""
+    import os
+    import sys
+
+    base = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Trstenko")
+    python = os.path.join(base, "piper-venv", "Scripts", "python.exe")
+    if not os.path.exists(python):
+        python = os.path.join(base, "piper-venv", "bin", "python")
+    folder = os.environ.get("TRSTENKO_VOICES") or os.path.join(base, "voices")
+    if not os.path.exists(python) or not os.path.exists(
+            os.path.join(folder, "en_US-ljspeech-medium.onnx")):
+        report.check("the real Piper speaks a sentence (SKIPPED: Piper and "
+                     "its voice are not installed here; tools/voices/setup.py "
+                     "installs them)", True)
+        return
+
+    from firmware import events as ev
+    from firmware.assistant import tts as tts_mod
+    from firmware.assistant import voices
+
+    from .hal import EmulatedHAL
+
+    inbox = ev.EventQueue()
+    hal = EmulatedHAL()
+    played = []
+    real = hal.speaker.play
+    hal.speaker.play = lambda pcm, rate=22050: (played.append((len(pcm),
+                                                               rate)),
+                                                real(pcm, rate))
+    synth = tts_mod.PiperSynthesizer(hal.speaker, inbox.post,
+                                     command=[python])
+    registry = voices.VoiceRegistry.load()
+    synth.configure(registry.get("en_US-ljspeech-medium"), folder)
+    try:
+        started = time.monotonic()
+        synth.start()
+        turn = synth.new_turn_id()
+        synth.say(turn, "Hello, I am Trstenko.")
+        synth.finish(turn)
+        done = False
+        end = time.monotonic() + 60
+        while time.monotonic() < end and not done:
+            for item in inbox.drain(10):
+                done = done or item.kind == ev.SPEAKING_DONE
+            time.sleep(0.05)
+        seconds = played[0][0] / 2.0 / played[0][1] if played else 0
+        report.check("the real Piper speaks a sentence: %.1fs of audio at "
+                     "%d Hz, after %.1fs including the model load"
+                     % (seconds, played[0][1] if played else 0,
+                        time.monotonic() - started),
+                     done and 0.8 < seconds < 5.0)
+    finally:
+        synth.close()

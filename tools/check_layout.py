@@ -145,6 +145,18 @@ def check_assistant_language():
     return ["firmware/assistant: %s" % p for p in lang.check()]
 
 
+def check_assistant_voices():
+    """The voice registry is where every voice's licence is recorded, so a
+    mistake in it is a licensing mistake."""
+    from firmware.assistant import voices
+
+    try:
+        voices.VoiceRegistry.load()
+    except voices.VoiceError as exc:
+        return ["firmware/assistant: %s" % p for p in str(exc).split("; ")]
+    return []
+
+
 def check():
     problems = []
 
@@ -180,6 +192,7 @@ def check():
     problems += check_migrations()
     problems += check_assistant_tables()
     problems += check_assistant_language()
+    problems += check_assistant_voices()
 
     baked = os.path.join(FIRMWARE, "face", "data", "faces.json")
     if not os.path.exists(baked):

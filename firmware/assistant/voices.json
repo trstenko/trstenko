@@ -1,0 +1,30 @@
+{
+  "en_US-ljspeech-medium": {
+    "label": "English (LJ Speech)",
+    "languages": ["en"],
+    "engine": "piper",
+    "model": "en_US-ljspeech-medium.onnx",
+    "config": "en_US-ljspeech-medium.onnx.json",
+    "sample_rate": 22050,
+    "speaker": null,
+    "speed": 1.0,
+    "licence": "Public domain (LJ Speech)",
+    "credit": "",
+    "ships": true,
+    "default_for": ["en"]
+  },
+  "sl_SI-artur-medium": {
+    "label": "Slovenščina (Artur)",
+    "languages": ["sl"],
+    "engine": "piper",
+    "model": "sl_SI-artur-medium.onnx",
+    "config": "sl_SI-artur-medium.onnx.json",
+    "sample_rate": 22050,
+    "speaker": null,
+    "speed": 1.0,
+    "licence": "CC BY 4.0 (Artur studio TTS). The training base is unconfirmed: ask the author before selling a unit with it.",
+    "credit": "Voice sl_SI-artur-medium, CC BY 4.0",
+    "ships": true,
+    "default_for": ["sl"]
+  }
+}

@@ -17,8 +17,10 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 
+from firmware import events as ev
 from firmware import pipeline as pipe
 from firmware.device import Device
 from firmware.hal.base import VOL_DOWN, VOL_UP
@@ -939,10 +941,104 @@ def _inside(box, region):
             and box[2] <= region[2] and box[3] <= region[3])
 
 
+def scenario_events(report, root):
+    queue = ev.EventQueue()
+
+    # A post from another thread has to end a long wait at once, or a wake
+    # word at 2Hz would be half a second late for no reason.
+    threading.Timer(0.05, lambda: queue.post(ev.Event(ev.WAKE_WORD))).start()
+    start = time.monotonic()
+    queue.wait(5.0)
+    waited = time.monotonic() - start
+    report.check("a post from another thread wakes the wait at once",
+                 0.02 < waited < 1.0, "%.2fs" % waited)
+    report.check("waiting does not take the event off the queue",
+                 len(queue) == 1)
+
+    queue.drain()
+    start = time.monotonic()
+    queue.wait(0.1)
+    report.check("an empty queue waits out its timeout",
+                 time.monotonic() - start >= 0.09)
+
+    queue.post(ev.Event(ev.CLOCK_SYNCED))
+    start = time.monotonic()
+    queue.wait(5.0)
+    report.check("waiting on a queue that already has something returns at once",
+                 time.monotonic() - start < 0.5)
+    queue.drain()
+
+    for n in range(120):
+        queue.post(ev.Event(ev.SENTENCE, data=n))
+    first = queue.drain(ev.DRAIN_LIMIT)
+    report.check("drain stops at its limit", len(first) == 50, str(len(first)))
+    report.check("and the rest wait for the next frame", len(queue) == 70)
+    report.check("oldest first", [e.data for e in first] == list(range(50)))
+    report.check("a smaller limit is respected", len(queue.drain(5)) == 5)
+
+    queue.drain(1000)
+    posters = [threading.Thread(
+        target=lambda k=k: [queue.post(ev.Event(ev.SENTENCE, data=(k, i)))
+                            for i in range(200)]) for k in range(4)]
+    for t in posters:
+        t.start()
+    for t in posters:
+        t.join()
+    got = []
+    while len(queue):
+        got += queue.drain()
+    report.check("four threads posting at once lose nothing", len(got) == 800,
+                 str(len(got)))
+
+    cmd = ev.Command("set_volume", 0.4)
+    queue.post(cmd)
+
+    def main_thread():
+        item = queue.drain()[0]
+        item.reply({"volume": item.args})
+
+    threading.Thread(target=main_thread).start()
+    try:
+        answer = cmd.wait(2.0)
+    except ev.CommandTimeout:
+        answer = None
+    report.check("a command's reply reaches the thread that asked",
+                 answer == {"volume": 0.4}, str(answer))
+
+    refused = ev.Command("settings.update", {"volume": 9})
+    refused.fail("volume must be between 0 and 1")
+    try:
+        refused.wait(0.1)
+        message = ""
+    except ev.CommandError as exc:
+        message = str(exc)
+    report.check("a refusal comes back as an error with its message",
+                 message == "volume must be between 0 and 1", message)
+
+    ignored = ev.Command("set_volume", 0.1)
+    start = time.monotonic()
+    try:
+        ignored.wait(0.15)
+        timed_out = False
+    except ev.CommandTimeout:
+        timed_out = True
+    report.check("a command nobody answers times out",
+                 timed_out and time.monotonic() - start >= 0.1)
+
+    report.check("every kind the plans name is a constant",
+                 {"WakeWord", "SpeechStarted", "SpeechEnded", "MicLost",
+                  "MicBack", "TurnProgress", "Sentence", "TurnDone",
+                  "TurnFailed", "SpeakingStarted", "SpeakingDone", "TtsDied",
+                  "SpeakingLevel", "Due", "ClockSynced", "NetworkChanged",
+                  "LowVoltage", "Hot", "Shutdown",
+                  "WorkerDied"} == set(ev.KINDS))
+
+
 def main(argv=None):
     root = tempfile.mkdtemp(prefix="trstenko-headless-")
     report = Report()
     scenarios = [
+        ("the event queue", scenario_events),
         ("boot and a full turn", scenario_boot_and_talk),
         ("the mute switch", scenario_mute),
         ("a turn that fails", scenario_failed_turn),

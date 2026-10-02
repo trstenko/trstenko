@@ -57,6 +57,16 @@ WAKE_MODEL = os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "wakeword", "models", "trstenko.json")
 
 
+class NeverDetector:
+    """A wake word detector that never fires."""
+
+    def process(self, chunk):
+        return False
+
+    def close(self):
+        pass
+
+
 class Assistant:
     """Everything `wire_assistant` built, and what the page asks about it."""
 
@@ -139,7 +149,7 @@ class Assistant:
 
 
 def _open_detector(cutoff_name):
-    from ..wakeword import open_detector
+    from ..wakeword.base import open_detector
 
     cutoff = WAKE_CUTOFFS.get(cutoff_name)
     config = {"engine": "micro_wakeword", "model_path": WAKE_MODEL}
@@ -238,6 +248,11 @@ def wire_assistant(device, hal, data_root, synth=None, detector=None,
                 assistant.audio_note = ("the wake word could not be loaded: "
                                         "%s" % exc)
                 log.warning(assistant.audio_note)
+        if detector is None:
+            # No wake word, but the microphone and the recording still work:
+            # a turn started by a button (the emulator's, or a test's) has to
+            # be heard. Without this the turn waited for audio nobody read.
+            detector = NeverDetector()
         if detector is not None:
             audio = audio_mod.AudioIn(
                 hal.mic, device.events.post, detector, assistant.vad,

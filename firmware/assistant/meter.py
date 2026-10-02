@@ -267,6 +267,22 @@ class Meter:
         # In case the device was off at the last midnight.
         self.rollup(db)
 
+    def today(self):
+        """The owner's current day, as stored in `usage.day`."""
+        with self._lock:
+            self._roll()
+            return self._day
+
+    def reset_totals(self):
+        """The owner deleted the usage history: start counting from nothing.
+        The limits stay, and so does the memory of why a provider is cooling."""
+        with self._lock:
+            self.spent_day = self.spent_month = 0
+            self.turns_day = self.requests_day = self.fallbacks_day = 0
+            self._warned.clear()
+            self._reached.clear()
+            self._turn_seen = set()
+
     def set_prices(self, prices):
         with self._lock:
             self._prices = prices

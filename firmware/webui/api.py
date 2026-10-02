@@ -80,6 +80,15 @@ class UpdateApi:
             return BAD_METHOD
         return action(body)
 
+    def stream(self, path, token=None):
+        """`GET /api/v1/events`, which is the one answer that is not a dict.
+        Returns None when `path` is not the stream, else (status, body)."""
+        if "/" + path.strip("/") != "/api/v1/events":
+            return None
+        if self.auth is not None and not self.auth.check(token):
+            return UNPAIRED
+        return self.v1.open_stream()
+
     # ---- handlers ----
 
     def _pair(self, body):

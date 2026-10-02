@@ -4731,3 +4731,172 @@ def scenario_assistant_failures(report, root):
                      rig.assistant.meter.summary()["turns_today"] == 1)
     finally:
         rig.close()
+
+
+def scenario_web_admin(report, root):
+    """Keys, memories, usage and privacy as the page sees them: through the
+    real dispatcher, answered by the main thread."""
+    from firmware.webui.api import UpdateApi
+    from firmware.webui.auth import Auth
+
+    rig = AssistantRig(root, "webadmin", key=False)
+    try:
+        fake = rig.fake
+        auth = Auth(rig.sched.data, clock=rig.clock.wall)
+        api = UpdateApi(None, rig.device, auth)
+        _, paired = api.dispatch("POST", "/api/auth", {"pin": auth.pin})
+        token = paired["token"]
+
+        def call(method, path, body=None, query=None):
+            return api.dispatch(method, path, body, token, query)
+
+        seen = []
+
+        def get(method, path, body=None, query=None):
+            status, payload = call(method, path, body, query)
+            seen.append(json.dumps(payload, default=str))
+            return status, payload
+
+        status, keys = get("GET", "/api/v1/keys")
+        report.check("with no key set, the page is told so",
+                     status == 200 and keys["gemini"]["set"] is False
+                     and keys["gemini"]["test"]["state"] == "none")
+        status, out = get("POST", "/api/v1/keys/gemini/test")
+        report.check("testing with no key is refused with a sentence",
+                     status == 400 and "key" in out["error"])
+        status, out = get("POST", "/api/v1/keys/nonsense", {"key": FAKE_KEY})
+        report.check("an unknown provider is a 404", status == 404)
+        status, out = get("POST", "/api/v1/keys/gemini", {"key": "short"})
+        report.check("something that is not a key is refused", status == 400)
+        status, out = get("POST", "/api/v1/keys/gemini", {"key": FAKE_KEY})
+        report.check("a key is stored and only its last four come back",
+                     status == 200 and out["set"] is True
+                     and out["last4"] == FAKE_KEY[-4:] and "key" not in out)
+
+        fake.queue(fp.error(401, "invalid_api_key", "Incorrect API key"))
+        status, out = get("POST", "/api/v1/keys/gemini/test")
+        report.check("a test is accepted at once", status == 200
+                     and out["state"] == "running")
+
+        def result():
+            return call("GET", "/api/v1/keys")[1]["gemini"]["test"]
+        rig.wait(lambda: result()["state"] != "running", 10)
+        got = result()
+        report.check("a refused key is a failed test with a sentence",
+                     got["state"] == "failed" and got["kind"] == "auth"
+                     and "key" in got["message"], str(got))
+
+        fake.queue(fp.text("ok", usage=(20, 2)))
+        rig.sched.plays.clear()
+        get("POST", "/api/v1/keys/gemini/test")
+        rig.wait(lambda: result()["state"] == "ok", 10)
+        report.check("a working key passes", result()["state"] == "ok")
+        report.check("and the device says hello, in its own voice",
+                     rig.wait(lambda: len(rig.plays()) == 1, 5))
+        status, keys = get("GET", "/api/v1/keys")
+        report.check("the page can see when it last worked",
+                     bool(keys["gemini"]["checked_ok"]))
+
+        status, out = get("POST", "/api/v1/keys/gemini", {"key": ""})
+        report.check("a key can be removed", status == 200
+                     and out["set"] is False)
+        get("POST", "/api/v1/keys/gemini", {"key": FAKE_KEY})
+
+        # memories
+        status, out = get("POST", "/api/v1/memories", {"text": "Likes tea"})
+        report.check("a memory can be added from the page",
+                     status == 201 and out["memory"]["source"] == "web")
+        mid = out["memory"]["id"]
+        status, out = get("POST", "/api/v1/memories", {"text": ""})
+        report.check("an empty memory is refused", status == 400
+                     and bool(out["error"]))
+        status, out = get("POST", "/api/v1/memories",
+                          {"text": "my key is " + FAKE_KEY})
+        report.check("a secret is refused, with the same sentence as by "
+                     "voice", status == 400, str(out))
+        status, out = get("POST", "/api/v1/memories/%d/pin" % mid,
+                          {"pinned": True})
+        report.check("it can be pinned", status == 200
+                     and bool(out["memory"]["pinned"]))
+        status, out = get("GET", "/api/v1/memories")
+        report.check("and listed with the count against the limit",
+                     out["count"] == 1 and out["limit"] > 1
+                     and out["memories"][0]["text"] == "Likes tea")
+        status, out = get("DELETE", "/api/v1/memories/%d" % mid)
+        report.check("it can be deleted", status == 200)
+        status, out = get("DELETE", "/api/v1/memories/%d" % mid)
+        report.check("deleting it twice is a 404", status == 404)
+        status, out = get("GET", "/api/v1/memories/abc")
+        report.check("a bad id is a 404", status == 404)
+
+        # usage
+        status, out = get("GET", "/api/v1/usage", query={"days": "30"})
+        today = out["days"][-1] if out["days"] else {}
+        report.check("usage shows today with the tests counted",
+                     status == 200 and today.get("requests", 0) >= 2
+                     and out["summary"]["month"]["spent_usd"] >= 0, str(out))
+        status, out = get("GET", "/api/v1/usage", query={"days": "5"})
+        report.check("an odd range is refused", status == 400)
+
+        # live
+        status, out = get("GET", "/api/v1/live")
+        report.check("the live view has the face, the stage and the timers",
+                     status == 200 and "face" in out
+                     and out["stage"] == "idle" and out["timers"] == [])
+        rig.ask("reminders.add", {"seconds": 600, "text": "tea"})
+        status, out = get("GET", "/api/v1/live")
+        report.check("a running timer counts down on the page",
+                     len(out["timers"]) == 1
+                     and out["timers"][0]["due_wall"] > out["now"])
+
+        # privacy
+        get("POST", "/api/v1/memories", {"text": "Has a cat"})
+        status, out = get("GET", "/api/v1/privacy/export")
+        report.check("the export has the memories and the settings",
+                     status == 200
+                     and out["memories"][0]["text"] == "Has a cat"
+                     and "settings" in out)
+        status, out = get("POST", "/api/v1/privacy/delete",
+                          {"what": "memories"})
+        report.check("deleting needs the PIN", status == 403
+                     and out["needs_pin"])
+        status, out = get("POST", "/api/v1/privacy/delete",
+                          {"what": "everything", "pin": auth.pin})
+        report.check("and a known thing to delete", status == 400)
+        status, out = get("POST", "/api/v1/privacy/delete",
+                          {"what": "memories", "pin": auth.pin})
+        report.check("with the PIN, it is deleted",
+                     status == 200 and out["deleted"]["memories"] == 1)
+        report.check("the memories really are gone",
+                     get("GET", "/api/v1/memories")[1]["count"] == 0)
+        get("POST", "/api/v1/privacy/delete",
+            {"what": "usage", "pin": auth.pin})
+        status, out = get("GET", "/api/v1/usage", query={"days": "7"})
+        report.check("usage can be wiped and the meter starts from nothing",
+                     all(d["requests"] == 0 for d in out["days"]))
+        report.check("a key never appeared in anything the page was sent",
+                     not any(FAKE_KEY in s for s in seen))
+
+        # the live stream
+        naps = []
+        status, stream = api.v1.open_stream(sleep=naps.append)
+        first = next(stream)
+        second = next(stream)
+        report.check("the stream says how long to wait before reconnecting, "
+                     "then sends the live state",
+                     status == 200 and first.startswith(b"retry:")
+                     and second.startswith(b"event: live")
+                     and b'"face"' in second)
+        others = [api.v1.open_stream(sleep=naps.append) for _ in range(2)]
+        fourth, body = api.v1.open_stream(sleep=naps.append)
+        report.check("a fourth page is told to poll instead", fourth == 503)
+        stream.close()
+        for _, s in others:
+            s.close()
+        again, extra = api.v1.open_stream(sleep=naps.append)
+        report.check("a page that went away frees its place", again == 200)
+        extra.close()
+        report.check("the stream needs the token",
+                     api.stream("/api/v1/events", None)[0] == 401)
+    finally:
+        rig.close()

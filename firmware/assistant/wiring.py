@@ -36,6 +36,7 @@ import os
 import threading
 
 from .. import events as ev
+from . import admin as admin_mod
 from . import lang as lang_mod
 from . import memories as memories_mod
 from . import meter as meter_mod
@@ -294,6 +295,7 @@ def wire_assistant(device, hal, data_root, synth=None, detector=None,
     # ---- the page and the other threads ----
     device.command("usage.summary", lambda args: meter.summary())
     device.command("assistant.status", lambda args: assistant.status())
+    admin_mod.attach(device, assistant)
     device.status_extra["assistant"] = assistant.status
 
     def on_settings(changed):

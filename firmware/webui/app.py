@@ -40,7 +40,7 @@ def create_app(manager, device=None, auth=None):
     def static_file(name):
         return send_from_directory(STATIC, name)
 
-    @app.route("/api/<path:rest>", methods=["GET", "POST", "PATCH"])
+    @app.route("/api/<path:rest>", methods=["GET", "POST", "PATCH", "DELETE"])
     def api_route(rest):
         # Parsed whatever the Content-Type says, as the standard-library
         # server does, so the two cannot disagree about a request.
@@ -56,6 +56,15 @@ def create_app(manager, device=None, auth=None):
         header = request.headers.get("Authorization", "")
         token = (header[7:].strip() if header.lower().startswith("bearer ")
                  else request.headers.get("X-Trstenko-Token", ""))
+        opened = api.stream("/api/" + rest, token)
+        if opened is not None:
+            status, payload = opened
+            if status != 200:
+                return Response(json.dumps(payload), status=status,
+                                mimetype="application/json")
+            return Response(payload, mimetype="text/event-stream",
+                            headers={"Cache-Control": "no-store",
+                                     "X-Accel-Buffering": "no"})
         status, payload = api.dispatch(request.method, "/api/" + rest, body,
                                        token, request.args.to_dict())
         return Response(json.dumps(payload), status=status,

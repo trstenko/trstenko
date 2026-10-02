@@ -139,6 +139,23 @@ class Auth:
         self.log("a device paired with the update page")
         return token, 0.0
 
+    def confirm(self, pin):
+        """Ask for the PIN again before something that cannot be undone. The
+        same lockout as pairing, but no new token and no 'paired' line.
+        Returns (ok, seconds_to_wait)."""
+        wait = self.locked_for
+        if wait > 0:
+            return False, wait
+        if not hmac.compare_digest(str(pin or ""), self.pin):
+            self._failures += 1
+            if self._failures > FREE_ATTEMPTS:
+                over = self._failures - FREE_ATTEMPTS
+                self._locked_until = self.clock() + min(
+                    MAX_LOCKOUT, BASE_LOCKOUT * (2 ** (over - 1)))
+            return False, self.locked_for
+        self._failures = 0
+        return True, 0.0
+
     def check(self, token):
         if not token:
             return False

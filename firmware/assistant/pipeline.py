@@ -252,7 +252,7 @@ class AssistantPipeline(base.Pipeline):
         turn = self._mine(event)
         if turn is not None:
             turn.sentence(data.get("text", ""))
-        elif str(data.get("turn_id", "")).startswith("ack-"):
+        elif str(data.get("turn_id", "")).startswith(("ack-", "say-")):
             self.tts.say_line(data.get("text", ""))
 
     def _on_turn_done(self, event):

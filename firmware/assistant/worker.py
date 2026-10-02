@@ -57,6 +57,9 @@ TURN_DEADLINE = 8.0
 FALLBACK_KINDS = (RATE_LIMITED, QUOTA, SERVER)
 FALLBACK_REFUSALS = ("rate_limited", "quota")
 TURN_LOG_KEPT = 50
+# A key test is one tiny request; it should not hold the page for long.
+KEY_TEST_DEADLINE = 15.0
+ERROR_KINDS = ("network", "auth", "rate_limited", "quota", "timeout")
 MAX_JOBS = 4
 
 
@@ -103,6 +106,7 @@ class Worker:
         self._closing = False
         self.turns = 0
         self.last_error = ""
+        self.key_tests = {}
 
     # ---- called from main ----
 
@@ -181,6 +185,8 @@ class Worker:
         try:
             if job.kind == "ack":
                 self._ack(job, cancel)
+            elif job.kind == "keytest":
+                self._keytest(job, cancel)
             else:
                 self._turn(job, cancel, started)
         except Exception:
@@ -265,6 +271,46 @@ class Worker:
         a = self.settings.data["assistant"]
         return stt.plan(self.providers, a["provider"], self._has_key, lang,
                         a["stt_provider"])
+
+    # ---- testing a key ----
+
+    def test_key(self, provider):
+        """The page's "Test": one tiny request with the stored key, on this
+        thread so a slow provider never holds up the main loop. The answer is
+        `key_tests[provider]`, which the page polls. Returns False if it could
+        not be queued."""
+        self.key_tests[provider] = {"state": "running", "at": self.wall()}
+        job = Job("say-key-%s" % provider, b"", "keytest")
+        job.provider = provider
+        if not self.submit(job):
+            self.key_tests[provider] = {"state": "failed", "kind": "busy",
+                                        "message": "The device is busy."}
+            return False
+        return True
+
+    def _keytest(self, job, cancel):
+        name = job.provider
+        strings = self._strings()
+        row = self.providers.get(name)
+        deadline = Deadline(KEY_TEST_DEADLINE)
+        try:
+            reply = self.client(name).chat(
+                row.default_model,
+                [{"role": "user", "content": "Reply with the one word: ok"}],
+                max_output=16, deadline=deadline, cancel=cancel,
+                on_attempt=lambda a: self.meter.record(a, job.turn_id))
+        except ProviderError as err:
+            self.key_tests[name] = {
+                "state": "failed", "kind": err.kind,
+                "message": strings("err_" + err.kind)
+                if err.kind in ERROR_KINDS else strings("err_generic")}
+            return
+        if self.secrets is not None:
+            self.secrets.mark_checked(name, int(self.wall()))
+        self.key_tests[name] = {"state": "ok", "at": self.wall()}
+        # The device says hello with the voice it will use, so the owner hears
+        # that the whole chain works (plan 07).
+        self._say(job.turn_id, strings("key_test_ok"))
 
     # ---- the alert window ----
 

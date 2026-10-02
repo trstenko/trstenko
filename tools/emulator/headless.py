@@ -3656,6 +3656,8 @@ def main(argv=None):
          asst.scenario_assistant_commands),
         ("cancelling a turn that is in flight",
          asst.scenario_assistant_cancel),
+        ("the page keys, memories, usage and privacy",
+         asst.scenario_web_admin),
         ("a turn that fails, and the voice that dies",
          asst.scenario_assistant_failures),
         ("speech to text", asst.scenario_stt),

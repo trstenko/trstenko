@@ -25,6 +25,7 @@
   "time_unknown": "I don't know the time yet.", 
   "snoozed": "Okay, snoozed.",
   "err_stuck": "Sorry, I got stuck on that one.",
+  "key_test_ok": "Hello! I can think now. That key works.",
   "short_version": "That's the short version.",
   "budget_warning_month": "Heads up: you've used 80 percent of this month's AI budget.",
   "budget_warning_day": "Heads up: you've used 80 percent of today's AI budget."

@@ -167,6 +167,7 @@ class Device:
         self.command("settings.update", self._cmd_settings_update)
         self.command("settings.get", self._cmd_settings_get)
         self.command("state", self._cmd_state)
+        self.command("live", self._cmd_live)
         # Always registered, so a device without a scheduler says so rather
         # than claiming the command does not exist.
         self.command("reminders.add", self._cmd_reminders_add)
@@ -402,6 +403,26 @@ class Device:
                             if self.announcer else None),
             },
             "alerts": alerts,
+        }
+
+    def _cmd_live(self, args):
+        """What the page's live face needs, small enough to ask every second:
+        the face, the stage of the turn, the level, and the running timers."""
+        turn = self.turn
+        timers = []
+        if self.scheduler is not None:
+            timers = [{"id": j["id"], "text": j["text"],
+                       "due_wall": j["due_wall"]}
+                      for j in self.scheduler.list("pending")
+                      if j["kind"] == "timer"]
+        return {
+            "face": self.face.current,
+            "stage": turn.stage if turn is not None else "idle",
+            "level": round(turn.level(), 3) if turn is not None else 0.0,
+            "muted": self.hal.muted(),
+            "now": self.wall(),
+            "timers": timers,
+            "ringing": self.announcer.ringing if self.announcer else None,
         }
 
     def _apply_settings(self, changed):

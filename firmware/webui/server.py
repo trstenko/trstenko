@@ -36,6 +36,10 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path, _, query = self.path.partition("?")
         if path.startswith("/api/"):
+            opened = self.api.stream(path, self._token())
+            if opened is not None:
+                self._stream(*opened)
+                return
             self._api("GET", path, {}, dict(parse_qsl(query)))
             return
         self._static(path)
@@ -52,6 +56,29 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         self._with_body("PATCH")
+
+    def do_DELETE(self):
+        self._with_body("DELETE")
+
+    def _stream(self, status, body):
+        if status != 200:
+            self._send(status, json.dumps(body).encode("utf-8"),
+                       "application/json")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        for name, value in SECURITY_HEADERS.items():
+            self.send_header(name, value)
+        self.end_headers()
+        try:
+            for frame in body:
+                self.wfile.write(frame)
+                self.wfile.flush()
+        except (OSError, ValueError):
+            pass          # the page went away
+        finally:
+            body.close()
 
     def _with_body(self, method):
         path, _, query = self.path.partition("?")

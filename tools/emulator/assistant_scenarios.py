@@ -3389,8 +3389,10 @@ def scenario_voices(report, root):
                  abs(registry.get(en).length_scale - 1.0) < 1e-9)
     old = os.environ.pop("TRSTENKO_VOICES", None)
     try:
-        report.check("the voices folder defaults to the data root's",
-                     voices.voices_dir("/d") == os.path.join("/d", "voices"))
+        own = os.path.join(root, "own-data")
+        os.makedirs(os.path.join(own, "voices"), exist_ok=True)
+        report.check("the voices folder is the data root's own, if it has one",
+                     voices.voices_dir(own) == os.path.join(own, "voices"))
         os.environ["TRSTENKO_VOICES"] = "/elsewhere"
         report.check("and can be put elsewhere, off the synced folder",
                      voices.voices_dir("/d") == "/elsewhere")

@@ -68,6 +68,19 @@ MAX_FRAME = 1 << 22
 POLL = 0.02
 
 
+def piper_python():
+    """The interpreter that has Piper: `TRSTENKO_PIPER`, else the environment
+    `tools/voices/setup.py` made on a development PC, else this one (the board,
+    where Piper is installed with the firmware)."""
+    if os.environ.get("TRSTENKO_PIPER"):
+        return os.environ["TRSTENKO_PIPER"]
+    from .voices import dev_base
+
+    sub = ("Scripts", "python.exe") if os.name == "nt" else ("bin", "python")
+    path = os.path.join(dev_base(), "piper-venv", *sub)
+    return path if os.path.exists(path) else sys.executable
+
+
 class TtsUnavailable(Exception):
     pass
 
@@ -80,8 +93,7 @@ class PiperSynthesizer:
                  mono=time.monotonic):
         self.speaker = speaker
         self.post = post
-        self.command = list(command or
-                            [os.environ.get("TRSTENKO_PIPER") or sys.executable])
+        self.command = list(command or [piper_python()])
         self.script = script or WORKER_SCRIPT
         self.extra = list(extra)
         self._mono = mono

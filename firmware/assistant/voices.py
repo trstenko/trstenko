@@ -202,6 +202,21 @@ class VoiceRegistry:
                 for v in self._voices.values() if v.credit]
 
 
+def dev_base():
+    """Where `tools/voices/setup.py` puts Piper and the voices on a development
+    PC: outside the synced project folder."""
+    if os.name == "nt":
+        root = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return os.path.join(root, "Trstenko")
+    return os.path.join(os.path.expanduser("~"), ".local", "share",
+                        "trstenko")
+
+
 def voices_dir(data_root):
-    return os.environ.get("TRSTENKO_VOICES") or os.path.join(data_root,
-                                                             "voices")
+    """`TRSTENKO_VOICES`, else the data root's own folder, else (on a PC where
+    the setup script was run) the folder it made."""
+    if os.environ.get("TRSTENKO_VOICES"):
+        return os.environ["TRSTENKO_VOICES"]
+    own = os.path.join(data_root, "voices")
+    dev = os.path.join(dev_base(), "voices")
+    return own if os.path.isdir(own) or not os.path.isdir(dev) else dev

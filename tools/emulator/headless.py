@@ -36,6 +36,7 @@ from firmware.webui import Auth, UpdateApi
 
 from . import audio as audio_mod
 from . import setup_scenarios
+from . import eval_scenarios
 from .clock import FakeClock
 from .fake_releases import FakeReleases
 from .hal import EmulatedHAL
@@ -3752,6 +3753,9 @@ def main(argv=None):
         ("the owner's own PIN, and hiding it",
          setup_scenarios.scenario_pin_options),
         ("gzipped copies of the page", setup_scenarios.scenario_page_gzip),
+        ("the model evaluation: scoring", eval_scenarios.scenario_eval_scoring),
+        ("the model evaluation: the runner, on the fake provider",
+         eval_scenarios.scenario_eval_runner),
         ("an optional update", scenario_optional_update),
         ("an urgent update", scenario_urgent_update),
         ("an urgent update, start to finish", scenario_urgent_end_to_end),

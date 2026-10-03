@@ -53,6 +53,7 @@ from .device import Device
 from .hal import open_hal
 from .storage import DB_NAME, Database
 from .storage import migrate as migrate_mod
+from .storage import factory
 from .storage import secrets as secrets_mod
 from .storage import settings as settings_mod
 from .scheduler.wiring import wire as wire_scheduler
@@ -143,9 +144,13 @@ def main(argv=None):
     auth = Auth(updater.config.data_root,
                 log=logging.getLogger("trstenko.auth").info)
     log.info("pairing PIN: %s", auth.pin)
-    netsetup.wire(device, netsetup.NmcliNetwork(),
+    network = netsetup.NmcliNetwork()
+    netsetup.wire(device, network,
                   serial=product.serial(updater.config.data_root),
                   pin=lambda: auth.pin, new_pin=auth.reset_pin)
+    # Last, so its closer runs after the database is closed.
+    factory.wire(device, updater.config.data_root, new_pin=auth.reset_pin,
+                 network=network)
 
     server = None
     if not args.no_web:

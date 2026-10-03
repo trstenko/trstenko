@@ -11,6 +11,7 @@
     GET   /api/v1/setup                    setup mode: its state, the networks
     POST  /api/v1/setup/scan               look for networks again
     POST  /api/v1/setup/join               {"ssid", "password"?}
+    POST  /api/v1/factory-reset            {"pin"}: everything, then a restart
     GET   /api/v1/settings                 everything but secrets
     PATCH /api/v1/settings                 {"voice": {"volume": 0.4}}, validated
 
@@ -161,6 +162,9 @@ class V1Api:
         if parts == ["privacy", "export"]:
             return self._only(method, "GET",
                               lambda: self._command("privacy.export"))
+        if parts == ["factory-reset"]:
+            return self._only(method, "POST",
+                              lambda: self._factory_reset(body))
         if parts == ["privacy", "delete"]:
             return self._only(method, "POST",
                               lambda: self._privacy_delete(body))
@@ -259,6 +263,15 @@ class V1Api:
         if refused is not None:
             return refused
         return self._command("privacy.delete", {"what": body.get("what")})
+
+    def _factory_reset(self, body):
+        """Needs the PIN again, like every delete."""
+        if not isinstance(body, dict):
+            return _bad("Send the PIN as a JSON object.")
+        refused = self._confirm(body)
+        if refused is not None:
+            return refused
+        return self._command("factory.reset")
 
     def _confirm(self, body):
         """None if the caller may go on, else the refusal."""

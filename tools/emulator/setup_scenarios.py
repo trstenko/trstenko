@@ -266,3 +266,121 @@ def scenario_setup_parts(report, root):
     report.check("an unchanged card is not drawn again",
                  setupcard.cached(dict(card)) is same
                  and setupcard.cached(None) is None)
+
+
+def scenario_factory_reset(report, root):
+    """Factory reset: asks for the PIN, wipes on the way out, restarts, and
+    the device that comes back is a new one in setup mode."""
+    from firmware.storage import DB_NAME, factory
+    from firmware.storage import settings as settings_mod
+    from firmware.storage.secrets import Secrets, default_path
+
+    from .headless import SchedRig
+
+    key = "sk-test-factory-reset-key-000111222333"
+    rig = SchedRig(root, "factory")
+    data = rig.data
+    device = rig.device
+    secrets = Secrets.load(default_path(data))
+    secrets.set_key("openai", key)
+    device.secrets = secrets
+    net = FakeNetwork(saved=True)
+    auth = Auth(data, clock=rig.clock.wall)
+    netsetup.wire(device, net, serial=SERIAL, pin=lambda: auth.pin,
+                  new_pin=auth.reset_pin, check=False)
+    factory.wire(device, data, new_pin=auth.reset_pin, network=net)
+
+    def pump(cmd):
+        device.events.post(cmd)
+        rig.tick()
+    api = UpdateApi(None, device, auth, commander=pump)
+    token = api.dispatch("POST", "/api/auth", {"pin": auth.pin})[1]["token"]
+
+    def call(path, body=None, method="POST"):
+        return api.dispatch(method, path, body, token)
+
+    call("/api/v1/reminders", {"text": "tea", "in_seconds": 600})
+    call("/api/v1/settings", {"owner": {"name": "Maj"}}, "PATCH")
+    rig.settings.data["updates"]["channel"] = "beta"
+    rig.settings.save()
+    rig.db.conn().execute(
+        "INSERT INTO memories (text, created_at, source) VALUES "
+        "('likes tea', 1, 'web')")
+    os.makedirs(os.path.join(data, "backups"), exist_ok=True)
+    open(os.path.join(data, "backups", "trstenko-v1.db"), "wb").close()
+    db_path = os.path.join(data, DB_NAME)
+    old_pin = auth.pin
+
+    status, out = call("/api/v1/factory-reset", {})
+    report.check("a factory reset without the PIN is refused",
+                 status == 403 and out.get("needs_pin"), str(out))
+    status, out = call("/api/v1/factory-reset", {"pin": "000000"
+                                                 if old_pin != "000000"
+                                                 else "111111"})
+    report.check("and with the wrong PIN", status == 403 and device.running)
+    status, out = call("/api/v1/factory-reset", None, "GET")
+    report.check("and it only answers a POST", status == 405)
+    report.check("nothing has been touched by the refusals",
+                 os.path.exists(db_path) and secrets.has_key("openai")
+                 and rig.hal.system.rebooted == 0)
+
+    status, out = call("/api/v1/factory-reset", {"pin": old_pin})
+    report.check("with the PIN it is accepted, and the loop is told to stop",
+                 status == 200 and out["restarting"] and not device.running,
+                 str(out))
+    report.check("the wiping waits for the shutdown: the files are still "
+                 "there while workers could be writing them",
+                 os.path.exists(db_path))
+    device.close()
+
+    left = sorted(os.listdir(data))
+    with open(settings_mod.default_path(data), encoding="utf-8") as fh:
+        saved = json.load(fh)
+    report.check("the database, its WAL and its backups are gone",
+                 not any(n.startswith(DB_NAME) for n in left)
+                 and "backups" not in left, str(left))
+    report.check("every key is gone, from the file and from memory",
+                 not os.path.exists(default_path(data))
+                 and not secrets.has_key("openai"))
+    report.check("the settings are the defaults again, but the update "
+                 "channel is kept",
+                 saved["owner"]["name"] == ""
+                 and saved["updates"]["channel"] == "beta", str(saved)[:120])
+    report.check("there is a new PIN and the old token is dead",
+                 auth.pin != old_pin and not auth.check(token))
+    report.check("the Wi-Fi is forgotten and the device restarts",
+                 ("forget",) in net.calls and not net.is_saved
+                 and rig.hal.system.rebooted == 1, str(net.calls))
+    text = "\n".join(rig.logs)
+    report.check("the key is in no log line", key not in text)
+    if rig in SchedRig.open_rigs:
+        SchedRig.open_rigs.remove(rig)
+
+    # What comes back up: a new device, with nothing in it, asking for Wi-Fi.
+    again = SchedRig(root, "factory")
+    try:
+        setup = netsetup.wire(again.device, net, serial=SERIAL,
+                              pin=lambda: auth.pin, new_pin=auth.reset_pin)
+        end = time.monotonic() + 3.0
+        while time.monotonic() < end and setup.state != netsetup.WAITING:
+            again.tick()
+            time.sleep(0.005)
+        memories = again.db.conn().execute(
+            "SELECT COUNT(*) FROM memories").fetchone()[0]
+        report.check("after the restart it is an empty device in setup mode, "
+                     "showing the new PIN",
+                     setup.state == netsetup.WAITING and memories == 0
+                     and again.scheduler.list() == []
+                     and setup.card()["pin"] == auth.pin, setup.state)
+        setup.close()
+    finally:
+        again.close()
+
+    # An ordinary shutdown wipes nothing.
+    plain = SchedRig(root, "factoryplain")
+    factory.wire(plain.device, plain.data, network=FakeNetwork())
+    plain.device.close()
+    report.check("a device that was not reset keeps everything on shutdown",
+                 os.path.exists(os.path.join(plain.data, DB_NAME))
+                 and plain.hal.system.rebooted == 0)
+    plain.close()

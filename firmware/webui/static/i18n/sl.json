@@ -317,5 +317,13 @@
   "wifi_joining": "Povezujem z {ssid}",
   "wifi_joining_help": "Trstenko je zapustil svoj Wi-Fi, da se poveže z omrežjem {ssid}. Tudi ta telefon preklopite nazaj na {ssid}, nato znova odprite stran in vnesite PIN s Trstenkovega zaslona.",
   "wifi_open_home": "Odpri {url}",
-  "wifi_address_hint": "Če se ta naslov ne odpre, uporabite številke na Trstenkovem zaslonu. Če povezava ne uspe, se Trstenkov Wi-Fi vrne in ta stran pove, zakaj."
+  "wifi_address_hint": "Če se ta naslov ne odpre, uporabite številke na Trstenkovem zaslonu. Če povezava ne uspe, se Trstenkov Wi-Fi vrne in ta stran pove, zakaj.",
+  "reset_name": "Tovarniška ponastavitev",
+  "reset_hint": "Vse zgoraj, vaši ključi, nastavitve in Wi-Fi",
+  "reset_button": "Ponastavi",
+  "reset_title": "Ponastavim Trstenka na novo?",
+  "reset_body": "Spomini, opomniki, poraba, ključi API, nastavitve in Wi-Fi se odstranijo, Trstenko pa se znova zažene. Tega ni mogoče razveljaviti.",
+  "reset_action": "Ponastavi vse",
+  "reset_done": "Trstenko se zaganja kot nov.",
+  "reset_done_body": "Čez minuto bo na zaslonu koda za Wi-Fi in nov PIN. Povežite se s tem Wi-Fi in ga znova nastavite."
 }

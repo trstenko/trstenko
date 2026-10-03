@@ -317,5 +317,13 @@
   "wifi_joining": "Joining {ssid}",
   "wifi_joining_help": "Trstenko has left its own Wi-Fi to join {ssid}. Put this phone back on {ssid} too, then open the page again and enter the PIN from Trstenko’s screen.",
   "wifi_open_home": "Open {url}",
-  "wifi_address_hint": "If that address does not open, use the numbers shown on Trstenko’s screen. If the join fails, Trstenko’s own Wi-Fi comes back and this page says why."
+  "wifi_address_hint": "If that address does not open, use the numbers shown on Trstenko’s screen. If the join fails, Trstenko’s own Wi-Fi comes back and this page says why.",
+  "reset_name": "Factory reset",
+  "reset_hint": "Everything above, your keys, your settings and the Wi-Fi",
+  "reset_button": "Reset",
+  "reset_title": "Reset Trstenko to new?",
+  "reset_body": "Memories, reminders, usage, API keys, settings and the Wi-Fi are all removed, and Trstenko restarts. This can’t be undone.",
+  "reset_action": "Reset everything",
+  "reset_done": "Trstenko is starting again as new.",
+  "reset_done_body": "In a minute its screen shows a Wi-Fi code and a new PIN. Join that Wi-Fi to set it up again."
 }

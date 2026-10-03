@@ -50,5 +50,10 @@ class FakeNetwork(Network):
         self.joined = ssid
         self.is_saved = True
 
+    def forget(self):
+        self.calls.append(("forget",))
+        self.is_saved = False
+        self.joined = None
+
     def address(self):
         return "192.168.1.57" if self.joined else None

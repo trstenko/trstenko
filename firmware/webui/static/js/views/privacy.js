@@ -1,6 +1,6 @@
 // Privacy and about: what leaves the device, your data, and what this is.
 
-import {api, clear, h, t, toast} from "/js/core.js";
+import {api, clear, h, setToken, t, toast} from "/js/core.js";
 import {confirmSheet, facts, save, sectionLabel, subHead, toggleRow} from "/js/ui.js";
 
 export async function render(root) {
@@ -30,6 +30,22 @@ export async function render(root) {
         return r.status === 403 ? t("pin_wrong") : (r.data.error || t("lost_contact"));
       }});
     if (ran) { toast(t("deleted")); load(); }
+  }
+
+  // Everything, and the Wi-Fi with it. The device restarts into setup mode
+  // with a new PIN, so this page has nothing left to talk to.
+  async function factoryReset() {
+    const ran = await confirmSheet({
+      title: t("reset_title"), body: t("reset_body"), action: t("reset_action"), cancel: t("cancel"), pin: true,
+      run: async (pin) => {
+        const r = await api("POST", "/api/v1/factory-reset", {pin});
+        if (r.ok) return "";
+        return r.status === 403 ? t("pin_wrong") : (r.data.error || t("lost_contact"));
+      }});
+    if (!ran) return;
+    setToken("");
+    clear(root).append(h("div", {class: "stack gap-s", style: "padding-top:24px"},
+      h("h1", {class: "status"}, t("reset_done")), h("p", {class: "muted"}, t("reset_done_body"))));
   }
 
   async function load() {
@@ -66,7 +82,11 @@ export async function render(root) {
       h("section", {class: "card flush", "aria-label": t("delete")},
         del("memories", t("memories"), t("n_facts", {n}), !n),
         del("log", t("log_name"), a.conversation_log ? t("log_on") : t("log_off")),
-        del("usage", t("usage_history"), t("usage_history_hint"))),
+        del("usage", t("usage_history"), t("usage_history_hint")),
+        h("div", {class: "row"},
+          h("div", {class: "row-main"}, h("span", {class: "row-title"}, t("reset_name")),
+            h("span", {class: "row-sub"}, t("reset_hint"))),
+          h("button", {class: "btn btn-sm btn-danger", type: "button", onclick: factoryReset}, t("reset_button")))),
       h("section", {class: "card stack gap-l", "aria-labelledby": "h-about"},
         h("h2", {class: "h2", id: "h-about"}, t("about")),
         facts([

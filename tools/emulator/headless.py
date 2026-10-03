@@ -3745,6 +3745,7 @@ def main(argv=None):
         ("setup mode on a new device", setup_scenarios.scenario_setup_new_device),
         ("setup mode: the scan list, the code and the card",
          setup_scenarios.scenario_setup_parts),
+        ("factory reset", setup_scenarios.scenario_factory_reset),
         ("an optional update", scenario_optional_update),
         ("an urgent update", scenario_urgent_update),
         ("an urgent update, start to finish", scenario_urgent_end_to_end),

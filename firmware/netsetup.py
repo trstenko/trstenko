@@ -103,6 +103,11 @@ class Network:
         """The device's address on the network it is on, or None."""
         raise NotImplementedError
 
+    def forget(self):
+        """Forget every saved Wi-Fi. A factory reset calls this, from the
+        shutdown path, so the device comes back up in setup mode."""
+        raise NotImplementedError
+
 
 class NmcliNetwork(Network):
     """NetworkManager, which Raspberry Pi OS Bookworm uses, through `nmcli`.
@@ -177,6 +182,13 @@ class NmcliNetwork(Network):
         except NetworkError:
             raise NetworkError("Couldn't join %s: wrong password or out of "
                                "range." % ssid)
+
+    def forget(self):
+        out = self._run("-t", "-f", "TYPE,UUID", "connection", "show")
+        for line in out.splitlines():
+            kind, _, uuid = line.partition(":")
+            if kind == "802-11-wireless" and uuid:
+                self._run("connection", "delete", "uuid", uuid)
 
     def address(self):
         try:

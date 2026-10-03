@@ -87,9 +87,17 @@ def words(text):
     return len(re.findall(r"\w+(?:['’-]\w+)*", text or ""))
 
 
+_TIME = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d)(?::00(?:\.0+)?)?$")
+
+
 def _same(got, want):
     if isinstance(want, str) and isinstance(got, str):
-        return got.strip().lower() == want.strip().lower()
+        got, want = got.strip().lower(), want.strip().lower()
+        # 18:00 and 18:00:00 are the same minute; models write both.
+        a, b = _TIME.match(got.upper()), _TIME.match(want.upper())
+        if a and b:
+            return a.group(1) == b.group(1)
+        return got == want
     return got == want
 
 

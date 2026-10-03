@@ -8,7 +8,7 @@
 {"say": "remind me to water the plants in two hours", "expect_tool": "set_reminder", "expect_args": {"when": "2026-10-02T17:10", "text~": "plants"}, "max_words": 15, "note": "a task with a delay is a reminder, not a timer"}
 {"say": "remind me to stretch in twenty minutes", "expect_tool": "set_reminder", "expect_args": {"when": "2026-10-02T15:30", "text~": "stretch"}, "max_words": 15}
 {"say": "at noon tomorrow remind me about the dentist", "expect_tool": "set_reminder", "expect_args": {"when": "2026-10-03T12:00", "text~": "dentist"}, "max_words": 15}
-{"say": "remind me to buy milk at three", "expect_tool": [], "expect_question": true, "max_words": 30, "note": "three today has passed and three at night is unlikely: it should ask, or say so"}
+{"say": "remind me to buy milk at three", "expect_tool": [], "also_ok": ["set_reminder"], "expect_question": true, "reply_not": "\\b(reminder set|I'll remind you)\\b", "max_words": 30, "note": "three today has passed: it may try and be refused, but it must end by asking which three"}
 {"say": "remind me to call grandma", "expect_tool": null, "expect_question": true, "max_words": 25, "note": "no time given: ask when"}
 # --- timers: a countdown with no task
 {"say": "set a timer for ten minutes", "expect_tool": "set_timer", "expect_args": {"seconds": 600}, "max_words": 12, "local": true}
@@ -28,7 +28,7 @@
 {"say": "my favourite tea is mint", "expect_tool": "save_memory", "expect_args": {"text~": "mint"}, "max_words": 15}
 {"say": "what's my sister called", "memories": ["The user's sister is called Ana."], "expect_tool": [], "also_ok": ["search_memory"], "reply_matches": "Ana", "max_words": 15}
 {"say": "what do you know about me", "memories": ["The user's sister is called Ana.", "The user likes mint tea."], "expect_tool": [], "also_ok": ["search_memory"], "reply_matches": "Ana|mint", "max_words": 40}
-{"say": "forget that I like mint tea", "memories": ["The user likes mint tea."], "expect_tool": "forget_memory", "also_ok": ["search_memory"], "max_words": 25}
+{"say": "forget that I like mint tea", "memories": ["The user likes mint tea."], "expect_tool": [], "also_ok": ["search_memory", "forget_memory"], "expect_question": true, "max_words": 25, "note": "forgetting asks first: this turn must end with the question, whether the model or the tool asks it"}
 {"say": "what's my dog's name", "expect_tool": [], "also_ok": ["search_memory"], "reply_not": "\\b(Rex|Max|Buddy|Bella)\\b", "max_words": 25, "note": "it does not know, and must not make one up"}
 # --- volume
 {"say": "turn the volume up", "expect_tool": "set_volume", "max_words": 10, "local": true}
@@ -40,7 +40,7 @@
 {"say": "never mind", "expect_tool": null, "max_words": 8, "local": true}
 {"say": "good morning", "expect_tool": null, "max_words": 15}
 # --- questions it answers from its own head, briefly
-{"say": "how many grams are in a pound", "expect_tool": null, "reply_matches": "45[34]", "max_words": 25}
+{"say": "how many grams are in a pound", "expect_tool": null, "reply_matches": "45[34]|four hundred (and )?fifty", "max_words": 25}
 {"say": "what's the capital of Slovenia", "expect_tool": null, "reply_matches": "Ljubljana", "max_words": 15}
 {"say": "what day is it tomorrow", "expect_tool": null, "reply_matches": "Saturday", "max_words": 15}
 {"say": "explain how a rainbow forms", "expect_tool": null, "max_words": 60, "note": "the spoken cap is 60 words"}

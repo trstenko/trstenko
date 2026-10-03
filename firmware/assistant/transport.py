@@ -353,10 +353,20 @@ def classify(status, body, headers=None, now=None):
         return make(AUTH if _KEY_INVALID.search(text) else BAD_REQUEST)
     if status == 429:
         ids = _quota_ids(error)
-        if _QUOTA.search(text) or re.search(r"PerDay|per_day", ids):
+        # The quota's own name decides before the wording does. Gemini's
+        # per-minute limit says "You exceeded your current quota, please
+        # check your plan and billing details", which reads like an empty
+        # account and is a fifteen-a-minute limit that clears in seconds
+        # (seen live, 2026-10-03). Called a quota, it would put a banner on
+        # the page and stop the device asking until its owner did something.
+        if re.search(r"PerDay|per_day", ids):
+            return make(QUOTA)
+        if re.search(r"PerMinute|per_minute", ids):
+            return make(RATE_LIMITED)
+        if _QUOTA.search(text):
             return make(QUOTA)
         google = str(error.get("status", "")).upper() == "RESOURCE_EXHAUSTED"
-        if google and not re.search(r"PerMinute|per_minute", ids):
+        if google:
             # Gemini sends the same status for both limits and does not always
             # say which. Treated as the short one until it happens twice.
             return make(RATE_LIMITED, ambiguous=True)

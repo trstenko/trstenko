@@ -4847,7 +4847,8 @@ def scenario_web_admin(report, root):
         status, out = get("GET", "/api/v1/live")
         report.check("a running timer counts down on the page",
                      len(out["timers"]) == 1
-                     and out["timers"][0]["due_wall"] > out["now"])
+                     and out["timers"][0]["due_wall"] > out["now"]
+                     and out["timers"][0]["length"] == 600)
 
         # privacy
         get("POST", "/api/v1/memories", {"text": "Has a cat"})
@@ -4900,3 +4901,46 @@ def scenario_web_admin(report, root):
                      api.stream("/api/v1/events", None)[0] == 401)
     finally:
         rig.close()
+
+
+def scenario_web_strings(report, root):
+    """The page's strings: both languages have the same keys, every key the
+    code asks for exists, and the whole page stays inside its size budget."""
+    import re
+
+    static = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "firmware", "webui", "static")
+    with open(os.path.join(static, "i18n", "en.json"), encoding="utf-8") as fh:
+        en = json.load(fh)
+    with open(os.path.join(static, "i18n", "sl.json"), encoding="utf-8") as fh:
+        sl = json.load(fh)
+    report.check("English and Slovenian have the same strings",
+                 set(en) == set(sl),
+                 str(sorted(set(en) ^ set(sl))))
+
+    def vars_in(s):
+        return sorted(re.findall(r"\{(\w+)\}", s))
+    report.check("and the same placeholders in each",
+                 all(vars_in(en[k]) == vars_in(sl[k]) for k in en if k in sl),
+                 str([k for k in en if k in sl
+                      and vars_in(en[k]) != vars_in(sl[k])]))
+
+    used, prefixes, total = set(), set(), 0
+    for folder, _, names in os.walk(static):
+        for name in names:
+            path = os.path.join(folder, name)
+            total += os.path.getsize(path)
+            if name.endswith(".js"):
+                with open(path, encoding="utf-8") as fh:
+                    text = fh.read()
+                used |= set(re.findall(r"\bt\(\"(\w+)\"", text))
+                prefixes |= set(re.findall(r"\bt\(\"(\w+_)\" \+", text))
+    # `t("stage_" + key)` is found by both patterns: it is a prefix, not a key.
+    missing = sorted(k for k in used - prefixes if k not in en)
+    report.check("every string the code asks for exists", not missing,
+                 str(missing))
+    report.check("the dynamic ones (alerts, banners) have their keys",
+                 all(any(k.startswith(p) for k in en) for p in prefixes),
+                 str(prefixes))
+    report.check("the whole page is under the 250KB budget",
+                 total < 250 * 1024, "%d bytes" % total)

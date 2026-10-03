@@ -3323,6 +3323,32 @@ def scenario_api_v1(report, root):
                             % other["id"])
     report.check("and cancelled", status == 200
                  and gone["reminder"]["state"] == "cancelled")
+    # The page's Stop button: the same "I heard you" as a press on the device.
+    status, nothing = rig.call("POST", "/api/v1/alert/stop")
+    report.check("stopping when nothing is going off is a 409",
+                 status == 409, str(nothing))
+    status, daily = rig.call("POST", "/api/v1/reminders",
+                             {"text": "feed the cat", "repeat": "daily",
+                              "local_time": "2026-10-02T19:00"})
+    r.advance_to(local_epoch(2026, 10, 2, 19, 0))
+    r.run(1.5)
+    status, state = rig.call("GET", "/api/v1/state")
+    status, stopped = rig.call("POST", "/api/v1/alert/stop")
+    after = rig.call("GET", "/api/v1/state")[1]
+    kept = rig.call("GET", "/api/v1/reminders",
+                    query={"state": "pending"})[1]["reminders"]
+    report.check("Stop from the page silences a ringing repeat, and it is "
+                 "still set for tomorrow",
+                 state["reminders"]["ringing"] == daily["id"]
+                 and stopped == {"ok": True}
+                 and after["reminders"]["ringing"] is None
+                 and [x["id"] for x in kept] == [daily["id"]]
+                 and kept[0]["local_time"].startswith("2026-10-03"),
+                 "%s %s" % (stopped, kept))
+    rig.call("POST", "/api/v1/reminders/%d/cancel" % daily["id"])
+    status, wrong = rig.call("GET", "/api/v1/alert/stop")
+    report.check("and it only answers a POST", status == 405)
+
     status, again = rig.call("POST", "/api/v1/reminders/%d/cancel"
                              % other["id"])
     report.check("cancelling again is a 409 with the reason",
@@ -3501,6 +3527,10 @@ def scenario_web_servers(report, root):
         results = {}
         results["page"] = request("GET", "/", None, None)
         results["script"] = request("GET", "/app.js", None, None)
+        results["module"] = request("GET", "/js/views/updates.js", None, None)
+        results["font"] = request("GET", "/fonts/quicksand.woff2", None, None)
+        results["strings"] = request("GET", "/i18n/sl.json", None, None)
+        results["escape"] = request("GET", "/js/../../server.py", None, None)
         results["missing"] = request("GET", "/nothing-here", None, None)
         results["unpaired"] = request("GET", "/api/v1/info", None, None)
         results["info"] = request("GET", "/api/v1/info", None, rig.token)
@@ -3519,10 +3549,15 @@ def scenario_web_servers(report, root):
 
         report.check("%s: the page and its script are served" % label,
                      results["page"][0] == 200 and results["script"][0] == 200
-                     and b"<script src=\"/app.js\"></script>"
+                     and b"<script type=\"module\" src=\"/app.js\"></script>"
                      in results["page"][2]
                      and b"<script>" not in results["page"][2]
-                     and b"fetch(\"/api/update\"" in results["script"][2])
+                     and b"/api/update" in results["module"][2])
+        report.check("%s: the font, the strings and the modules are served, "
+                     "and a path out of the folder is not" % label,
+                     results["font"][0] == 200 and results["strings"][0] == 200
+                     and json.loads(results["strings"][2])["nav_home"]
+                     and results["escape"][0] == 404)
         report.check("%s: an unknown path is a 404" % label,
                      results["missing"][0] == 404)
         report.check("%s: 401 without a token" % label,
@@ -3658,6 +3693,7 @@ def main(argv=None):
          asst.scenario_assistant_cancel),
         ("the page keys, memories, usage and privacy",
          asst.scenario_web_admin),
+        ("the page's strings and size", asst.scenario_web_strings),
         ("a turn that fails, and the voice that dies",
          asst.scenario_assistant_failures),
         ("speech to text", asst.scenario_stt),

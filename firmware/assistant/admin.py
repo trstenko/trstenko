@@ -55,6 +55,14 @@ def attach(device, assistant):
         for name in KEYED:
             out[name]["test"] = dict(tests.get(name) or {"state": "none"})
         out["selected"] = device.settings.data["assistant"]["provider"]
+        out["providers"] = [
+            {"id": n, "label": p.label, "models": list(p.models),
+             "default_model": p.default_model, "needs_key": p.needs_key,
+             "key_help_url": p.key_help_url, "languages": list(p.languages),
+             "free_tier": (p.free_tier or {}).get("note"),
+             "verified": p.verified}
+            for n in assistant.providers.names()
+            for p in [assistant.providers.get(n)]]
         return out
 
     def keys_set(args):

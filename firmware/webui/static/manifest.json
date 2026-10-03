@@ -1,0 +1,12 @@
+{
+  "name": "Trstenko",
+  "short_name": "Trstenko",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#12191d",
+  "theme_color": "#12191d",
+  "icons": [
+    {"src": "/icons/icon-180.png", "sizes": "180x180", "type": "image/png"},
+    {"src": "/icons/icon-240.png", "sizes": "240x240", "type": "image/png"}
+  ]
+}

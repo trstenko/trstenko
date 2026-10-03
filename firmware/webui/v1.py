@@ -7,6 +7,7 @@
                                             "repeat"?, "tz"?}
     POST  /api/v1/reminders/{id}/cancel
     POST  /api/v1/reminders/{id}/snooze    {"minutes"?}
+    POST  /api/v1/alert/stop               acknowledge whatever is going off
     GET   /api/v1/settings                 everything but secrets
     PATCH /api/v1/settings                 {"voice": {"volume": 0.4}}, validated
 
@@ -72,6 +73,7 @@ class V1Api:
         passes a function that also runs a tick, since there is no loop
         running in another thread."""
         self.owner = owner
+        self._face_shapes = None
         self.timeout = timeout
         self._commander = commander
 
@@ -117,6 +119,14 @@ class V1Api:
             if parts[2] == "cancel":
                 return self._command("reminders.cancel", {"id": job_id})
             return self._reminders_snooze(job_id, body)
+        if parts == ["alert", "stop"]:
+            # "I heard you", as a button on the device would say it. Not a
+            # cancel: a repeating reminder that is stopped still comes back
+            # tomorrow, and a cancelled one does not.
+            return self._only(method, "POST",
+                              lambda: self._command("announce.ack"))
+        if parts == ["faces"]:
+            return self._only(method, "GET", self._faces)
         if parts == ["live"]:
             return self._only(method, "GET", lambda: self._command("live"))
         if parts == ["assistant"]:
@@ -146,6 +156,26 @@ class V1Api:
         return 404, {"error": "no such endpoint"}
 
     # ---- handlers ----
+
+    def _faces(self):
+        """The shapes of each face at rest, for the page to draw the same face
+        the screen does. The tracks (blinks, bounces) are the screen's."""
+        if self._face_shapes is None:
+            import json
+            import os
+
+            from firmware.face import facedata
+
+            path = os.path.join(os.path.dirname(os.path.abspath(
+                facedata.__file__)), "data", "faces.json")
+            with open(path, "r", encoding="utf-8") as fh:
+                states = json.load(fh)["states"]
+            self._face_shapes = {
+                name: [{k: shape[k] for k in ("name", "x", "y", "w", "h", "r",
+                                              "color")}
+                       for shape in state["shapes"]]
+                for name, state in states.items()}
+        return 200, {"faces": self._face_shapes, "width": 320, "height": 240}
 
     def _memory_add(self, body):
         if not isinstance(body, dict):

@@ -412,7 +412,7 @@ class Device:
         timers = []
         if self.scheduler is not None:
             timers = [{"id": j["id"], "text": j["text"],
-                       "due_wall": j["due_wall"]}
+                       "due_wall": j["due_wall"], "length": j.get("length")}
                       for j in self.scheduler.list("pending")
                       if j["kind"] == "timer"]
         return {

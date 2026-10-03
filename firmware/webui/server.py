@@ -23,7 +23,9 @@ from .headers import MAX_BODY, SECURITY_HEADERS
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css",
-         ".js": "text/javascript", ".png": "image/png", ".svg": "image/svg+xml"}
+         ".js": "text/javascript", ".png": "image/png", ".svg": "image/svg+xml",
+         ".json": "application/json", ".woff2": "font/woff2",
+         ".ico": "image/x-icon"}
 
 
 class _Handler(BaseHTTPRequestHandler):

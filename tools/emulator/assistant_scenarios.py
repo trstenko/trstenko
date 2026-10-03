@@ -2178,9 +2178,34 @@ def scenario_tools_reminders(report, root):
     rig = ToolRig(root, "toolrem-sl", lang="sl")
     try:
         r = rig.run("set_timer", {"seconds": 600})
-        report.check("in Slovenian the timer line leaves out the number "
-                     "rather than guess its ending",
-                     r.say == "Časovnik je nastavljen.", r.say)
+        report.check("in Slovenian the timer line says the length, with the "
+                     "ending the number needs",
+                     r.say == "Časovnik je nastavljen za deset minut.", r.say)
+        from firmware.assistant import spoken
+        lengths = {1: "eno sekundo", 2: "dve sekundi", 3: "tri sekunde",
+                   45: "petinštirideset sekund", 60: "eno minuto",
+                   90: "eno minuto in trideset sekund", 120: "dve minuti",
+                   240: "štiri minute", 300: "pet minut",
+                   1260: "enaindvajset minut", 3600: "eno uro",
+                   5400: "eno uro in trideset minut", 7200: "dve uri",
+                   10800: "tri ure", 18000: "pet ur"}
+        wrong = {s: spoken.duration(s, "sl") for s, want in lengths.items()
+                 if spoken.duration(s, "sl") != want}
+        report.check("one, two, three-or-four and five-and-up each take "
+                     "their own ending, for hours, minutes and seconds",
+                     not wrong, str(wrong))
+        report.check("a reminder is 'set for today at six', never 'za ob', "
+                     "and 'za ponedeljek', not 'za v ponedeljek'",
+                     spoken.with_preposition("ob šestih zvečer", "sl")
+                     == "danes ob šestih zvečer"
+                     and spoken.with_preposition("opoldne", "sl")
+                     == "danes opoldne"
+                     and spoken.with_preposition(
+                         "v ponedeljek ob devetih zjutraj", "sl")
+                     == "ponedeljek ob devetih zjutraj"
+                     and spoken.with_preposition("jutri opoldne", "sl")
+                     == "jutri opoldne"
+                     and spoken.duration(60, "de") is None)
         r = rig.run("set_volume", {"level": 40})
         report.check("and the volume line is Slovenian",
                      "40" in r.say and "Glasnost" in r.say, r.say)

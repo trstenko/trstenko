@@ -28,8 +28,10 @@ LIST_LIMIT = 100
         "call."),
     params={
         "text": {"type": "string", "max_length": mem.MAX_CHARS,
-                 "description": "The fact as a full sentence, such as 'The "
-                                "user's sister is called Ana.'"},
+                 "description": "The fact as a full sentence, in the "
+                                "language the user is speaking, such as "
+                                "'The user's sister is called Ana.' or "
+                                "'Uporabnikovi sestri je ime Ana.'"},
         "category": {"type": "string", "enum": list(mem.CATEGORIES),
                      "description": "person, preference, fact or other."},
     },

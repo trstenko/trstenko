@@ -19,13 +19,16 @@ MAX_LISTED = 10
 @tool(
     name="set_timer",
     description=(
-        "Start a countdown, as in 'in ten minutes' or 'set a timer'. For "
-        "'remind me to ...' use set_reminder."),
+        "Start a countdown when the user asks for a timer, as in 'set a "
+        "timer for ten minutes'. If they ask to be reminded of something "
+        "('remind me', 'opomni me'), use set_reminder, also for 'in twenty "
+        "minutes'."),
     params={
         "seconds": {"type": "integer", "min": 1, "max": 24 * 3600,
                     "description": "How long, in seconds, at most 24 hours."},
         "label": {"type": "string", "optional": True, "max_length": 60,
-                  "description": "What it is for, such as 'pasta'."},
+                  "description": "A name for the timer, such as 'pasta'. "
+                                 "Never a task."},
     },
     final=True,
 )
@@ -41,9 +44,9 @@ def set_timer(ctx, seconds, label):
 @tool(
     name="set_reminder",
     description=(
-        "Remind the user of something at a local date and time, as in "
-        "'remind me to ... at six'. For 'in N minutes' with no task, use "
-        "set_timer."),
+        "Remind the user of something, as in 'remind me to ... at six' or "
+        "'remind me in twenty minutes to ...': work out the local time. Only "
+        "a bare countdown is set_timer."),
     params={
         "when": {"type": "string", "max_length": 25,
                  "description": "Local time as 2026-10-02T18:00, worked out "

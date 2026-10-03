@@ -6,8 +6,9 @@ a yawn, a nap -- played once, every several minutes, and handed back to
 `face_idle` by the controller. Each one starts and ends on the idle pose, so
 the blend in and out has nothing to hide.
 
-`face_alert` is the face for a ringing reminder or timer. Like the muted face
-it borrows a symbol people already know rather than asking them to learn one.
+`face_alert` is the face for a ringing reminder: like the muted face it borrows
+a symbol people already know, a bell. `face_timer` is a timer going off, with
+no symbol: the face itself calls out.
 
 Everything here must stay inside the blit region (x 48-272, y 32-192): what
 leaves it is not sent to the panel.
@@ -20,7 +21,7 @@ from .timeline import keys
 
 EYE_Y = 106.0
 EYE_W, EYE_H, EYE_R_ = 70.0, 92.0, 27.0
-# Idle holds back from full brightness; an act that perks up goes to 100.
+# Idle holds back from full brightness; a livelier act goes to 100.
 DIM = 88.0
 
 IDLE_EYES = [("eye_l", EYE_L, EYE_Y, EYE_W, EYE_H, EYE_R_),
@@ -146,22 +147,6 @@ def _happy():
     return d, IDLE_EYES, t
 
 
-def _wink():
-    d = 2.0
-    t = {}
-    t[("eye_r", "sy")] = keys((0.0, 1.0), (0.3, 1.0, "ease_in"), (0.38, 0.07),
-                              (0.85, 0.07, "ease_out"), (1.0, 1.0), (d, 1.0))
-    t[("eye_r", "sx")] = keys((0.0, 1.0), (0.3, 1.0), (0.38, 1.08),
-                              (0.85, 1.08), (1.0, 1.0), (d, 1.0))
-    t[("eye_l", "sy")] = keys((0.0, 1.0), (0.3, 1.0), (0.42, 1.08),
-                              (0.85, 1.08), (1.05, 1.0), (d, 1.0))
-    _both(t, "y", (0.0, EYE_Y), (0.3, EYE_Y), (0.42, 103.0), (0.85, 103.0),
-          (1.05, EYE_Y), (d, EYE_Y))
-    _both(t, "opacity", (0.0, DIM), (0.3, DIM), (0.42, 100.0), (0.85, 100.0),
-          (1.3, DIM), (d, DIM))
-    return d, IDLE_EYES, t
-
-
 def _doze():
     """A short nap: eyes shut and sunk, three bubbles drifting up, then a start
     and a quick look both ways to see who noticed."""
@@ -223,32 +208,14 @@ def _roll():
     return d, IDLE_EYES, t
 
 
-def _perk():
-    """Noticing something: taller, brighter, two quick blinks, and back."""
-    d = 2.8
-    t = {}
-    _both(t, "sy", (0.0, 1.0), (0.2, 1.0, "ease_in"), (0.28, 0.9, "ease_out"),
-          (0.5, 1.2), (0.7, 1.14), *_blink(1.0, 1.14), *_blink(1.25, 1.14),
-          (1.6, 1.14), (2.0, 1.0), (d, 1.0))
-    _both(t, "sx", (0.0, 1.0), (0.2, 1.0), (0.28, 1.06), (0.5, 1.04),
-          (1.6, 1.04), (2.0, 1.0), (d, 1.0))
-    _both(t, "y", (0.0, EYE_Y), (0.2, EYE_Y), (0.28, 108.0), (0.5, 100.0),
-          (1.6, 100.0), (2.0, EYE_Y), (d, EYE_Y))
-    _both(t, "opacity", (0.0, DIM), (0.28, DIM), (0.5, 100.0), (1.6, 100.0),
-          (2.2, DIM), (d, DIM))
-    return d, IDLE_EYES, t
-
-
 IDLE_BUILDERS = {
     "face_idle_look": _look,
     "face_idle_curious": _curious,
     "face_idle_sleepy": _sleepy,
     "face_idle_yawn": _yawn,
     "face_idle_happy": _happy,
-    "face_idle_wink": _wink,
     "face_idle_doze": _doze,
     "face_idle_roll": _roll,
-    "face_idle_perk": _perk,
 }
 
 
@@ -332,7 +299,9 @@ def alert_hey():
     return d, shapes, t
 
 
+# A reminder has something to tell you, so it gets the symbol. A timer only
+# has to be noticed.
 ALERT_BUILDERS = {
-    "face_alert_bell": alert_bell,
-    "face_alert_hey": alert_hey,
+    "face_alert": alert_bell,
+    "face_timer": alert_hey,
 }

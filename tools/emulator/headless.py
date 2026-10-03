@@ -263,6 +263,14 @@ def scenario_idle_acts(report, root):
     renderer = FaceRenderer(ssaa=1)
     left, top, right, bottom = state_defs.DIRTY_RECT
     outside = []
+    for name in state_defs.ALERT_FACES:
+        state = states[name]
+        for i in range(int(state.duration * 30) + 1):
+            _, box = renderer.render(state.sample(i / 30.0))
+            if box and (box[0] < left or box[1] < top
+                        or box[2] > right or box[3] > bottom):
+                outside.append("%s at %.2fs: %s" % (name, i / 30.0, box))
+                break
     for name in state_defs.IDLE_ACTS:
         state = states[name]
         first, last = state.sample(0.0), state.sample(state.duration)
@@ -2397,8 +2405,8 @@ def scenario_scheduler_timers(report, root):
     report.check("at ten minutes it fires", rig.state_of(timer["id"])
                  == "ringing", rig.state_of(timer["id"]))
     report.check("and the chime plays", len(rig.plays) == 1)
-    report.check("the alert face is up", rig.device.face.current
-                 == "face_talking" or rig.announcer.active)
+    report.check("the timer's face is up", rig.device.face.current
+                 == "face_timer", rig.device.face.current)
     rig.run(1.5)
     report.check("with the line spoken",
                  rig.said == ["Your ten-minute timer is done."],
@@ -2643,14 +2651,18 @@ def scenario_announcements(report, root):
                  len(rig.plays) == 1
                  and rig.plays[0][1] == len(announce.load_chime(
                      "chime_reminder.wav").pcm))
-    report.check("the face is the alert face while it speaks",
-                 rig.device.face.current == "face_talking")
+    report.check("the face is the bell while it speaks",
+                 rig.device.face.current == "face_alert",
+                 rig.device.face.current)
+    report.check("the page is told a face it can draw",
+                 rig.device.summary()["face"] == "face_talking")
     report.check("the announcer says it is announcing",
                  rig.device.summary()["announcing"]["ringing"] == mum["id"])
 
     rig.run(12.0)
     report.check("after the acknowledgement window the face settles",
-                 rig.device.face.current != "face_talking")
+                 rig.device.face.current == "face_idle",
+                 rig.device.face.current)
     report.check("but the reminder is still ringing, waiting to be heard",
                  rig.state_of(mum["id"]) == "ringing")
 
@@ -2797,7 +2809,7 @@ def scenario_announcement_timing(report, root):
     report.check("a reminder due while muted is announced anyway",
                  len(rig.plays) == 1 and rig.said == ["Reminder: call mum."])
     report.check("and the screen shows the alert, not the muted face",
-                 rig.device.face.current == "face_talking",
+                 rig.device.face.current == "face_alert",
                  rig.device.face.current)
     rig.press()
     rig.run(2.0)

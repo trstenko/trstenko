@@ -713,9 +713,8 @@ class Device:
     def _face_for(self, now):
         if self.announcer is not None and self.announcer.active:
             # Even when muted: the switch cuts the microphone, not the
-            # reminder. TODO face_alert, which needs drawing in After Effects;
-            # until it exists the talking face is the nearest thing that moves.
-            return "face_talking"
+            # reminder. A timer going off calls out; anything else rings.
+            return "face_timer" if self.announcer.timer else "face_alert"
         if self.hal.muted():
             return "face_muted"
         if now < self.error_until:
@@ -763,8 +762,11 @@ class Device:
         return act
 
     def shown_face(self):
-        """The face by the name the page knows: an idle act is still idle."""
+        """The face by a name the page knows: an idle act is still idle."""
         current = self.face.current
+        if current in state_defs.ALERT_FACES:
+            # The page has no bell to draw; it shows the face speaking.
+            return "face_talking"
         return "face_idle" if current in state_defs.IDLE_ACTS else current
 
     def set_card(self, fn):

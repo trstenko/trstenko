@@ -370,13 +370,16 @@ COLOR_OVERRIDE = {
 }
 
 ORDER = ["face_idle", "face_listening", "face_thinking", "face_talking",
-         "face_wake", "face_muted", "face_boot", "face_error"]
+         "face_wake", "face_muted", "face_boot", "face_error",
+         "face_alert", "face_timer"]
 
 # What the idle face does now and then, built in `acts.py`. Each plays once
 # and hands back to face_idle. The device picks one every several minutes.
 IDLE_ACTS = ("face_idle_look", "face_idle_curious", "face_idle_sleepy",
-             "face_idle_yawn", "face_idle_happy", "face_idle_wink",
-             "face_idle_doze", "face_idle_roll", "face_idle_perk")
+             "face_idle_yawn", "face_idle_happy", "face_idle_doze",
+             "face_idle_roll")
+# A reminder ringing, and a timer going off. Also built in `acts.py`.
+ALERT_FACES = ("face_alert", "face_timer")
 
 # Where a one-shot goes when it finishes. The controller follows these on its
 # own, so the interaction loop never has to time the handover.
@@ -434,6 +437,11 @@ def build(data_path=None):
         states[name] = State(
             name, duration, [Shape(*spec[:6]) for spec in shapes], tracks,
             loop=False, source="code")
+    for name in ALERT_FACES:
+        duration, shapes, tracks = acts.ALERT_BUILDERS[name]()
+        states[name] = State(
+            name, duration, [Shape(*spec[:6]) for spec in shapes], tracks,
+            loop=True, source="code")
 
     for name, state in states.items():
         builder = CODE_TRACKS.get(name)

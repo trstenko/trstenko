@@ -24,6 +24,7 @@
   "time_is": "It's {time}.",
   "time_unknown": "I don't know the time yet.", 
   "snoozed": "Okay, snoozed.",
+  "err_not_done": "Sorry, I couldn't do that, so nothing was set. Please ask me again.",
   "err_stuck": "Sorry, I got stuck on that one.",
   "key_test_ok": "Hello! I can think now. That key works.",
   "short_version": "That's the short version.",

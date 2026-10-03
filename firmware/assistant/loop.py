@@ -32,13 +32,19 @@ Why it is shaped the way it is:
   to `on_sentence` while the stream is still open, because Piper produces nothing
   until it has a whole line and the first sentence sets the time to first sound.
 
+- **A promise is not spoken until something stands behind it.** "I'll set
+  that" with no tool call sets nothing, and the owner would believe it. Such a
+  sentence is held until the step ends; with no tool call the model is told
+  once, and if it still calls none the device says it could not do it
+  (`promises.py`).
+
 The loop speaks nothing and changes nothing itself: it calls `on_sentence`, and
 the tools it runs send `Command`s (plan 01).
 """
 
 import time
 
-from . import speech_text
+from . import promises, speech_text
 from .transport import (AUTH, BAD_REQUEST, CANCELLED, NETWORK, QUOTA,
                         RATE_LIMITED, SERVER, TIMEOUT, ProviderError)
 
@@ -99,6 +105,8 @@ class TurnResult:
         self.refused = None
         self.cancelled = False
         self.stuck = False
+        # The model said it had done something and called no tool, twice.
+        self.unkept = False
         self.empty = False
         self.shortcut = False
         self.first_sentence_at = None
@@ -120,6 +128,8 @@ class TurnResult:
             return FAILURE_KEYS.get(self.error.kind, "err_generic")
         if self.stuck:
             return "err_stuck"
+        if self.unkept:
+            return "err_not_done"
         if self.empty:
             return "err_generic"
         return None
@@ -170,23 +180,39 @@ class Loop:
             on_sentence(piece)
 
         step_spoken = []
+        # Sentences of this step that sound like "done", kept back until the
+        # step shows whether a tool was called (promises.py). `worked` counts
+        # the tools that have succeeded in this turn: after one has, the model
+        # is describing something real and nothing is held.
+        held = []
+        worked = [0]
+        nudged = [False]
+
+        def speak(sentence):
+            if held or (not worked[0] and promises.looks_like_promise(
+                    sentence, turn.lang)):
+                # Everything after a held sentence waits with it, so the
+                # order of what is said never changes.
+                held.append(sentence)
+            else:
+                emit(sentence)
 
         def on_text(delta):
             text = heard.feed(delta)
             if text:
                 step_spoken.append(text)
                 for sentence in splitter.feed(text):
-                    emit(sentence)
+                    speak(sentence)
 
         def end_of_step():
             tail = heard.finish()
             if tail:
                 step_spoken.append(tail)
                 for sentence in splitter.feed(tail):
-                    emit(sentence)
+                    speak(sentence)
             rest = splitter.flush()
             if rest:
-                emit(rest)
+                speak(rest)
             if heard.transcript:
                 result.transcript = heard.transcript
 
@@ -241,6 +267,24 @@ class Loop:
                 messages[user_index] = {"role": "user",
                                         "content": heard.transcript}
 
+            if not reply.tool_calls and held and held[-1].rstrip(
+                    "\"')”’ ").endswith("?"):
+                # "Okay. For how long?" is not a promise: it ends by asking.
+                waiting, held[:] = list(held), []
+                for sentence in waiting:
+                    emit(sentence)
+            if not reply.tool_calls and held:
+                # A promise, and nothing was called. Do not say it and do not
+                # remember it: tell the model once, then give up honestly.
+                del held[:]
+                produced.pop()
+                if nudged[0]:
+                    result.unkept = True
+                    emit(strings("err_not_done"), trusted=True)
+                    return result
+                nudged[0] = True
+                messages.append({"role": "user", "content": promises.NUDGE})
+                continue
             if not reply.tool_calls:
                 if cap.dropped:
                     emit(strings("short_version"), trusted=True)
@@ -254,6 +298,15 @@ class Loop:
             if ran is None:
                 result.cancelled = True
                 return result
+            worked[0] += sum(1 for r in ran if r.ok)
+            if held:
+                # It did call something. If that worked, what it said was
+                # true and only late. If it failed, "I'll set that" would be
+                # a lie; the next step explains what went wrong instead.
+                waiting, held[:] = list(held), []
+                if worked[0]:
+                    for sentence in waiting:
+                        emit(sentence)
             if (ran and all(r.final for r in ran)
                     and len(reply.tool_calls) <= self.max_calls
                     and not "".join(step_spoken).strip()):

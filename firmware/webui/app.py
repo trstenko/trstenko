@@ -12,6 +12,7 @@ boot and show a face, so `firmware.webui` never imports this at module level.
 import json
 
 from .api import UpdateApi
+from .headers import MAX_BODY, SECURITY_HEADERS
 
 
 def create_app(manager, device=None, auth=None):
@@ -22,6 +23,15 @@ def create_app(manager, device=None, auth=None):
     api = UpdateApi(manager, device, auth)
     app = Flask(__name__, static_folder=None)
 
+    app.config["MAX_CONTENT_LENGTH"] = MAX_BODY
+
+    @app.after_request
+    def secure(response):
+        # On everything, including the static page and the error pages.
+        for name, value in SECURITY_HEADERS.items():
+            response.headers[name] = value
+        return response
+
     @app.get("/")
     def index():
         return send_from_directory(STATIC, "index.html")
@@ -30,14 +40,24 @@ def create_app(manager, device=None, auth=None):
     def static_file(name):
         return send_from_directory(STATIC, name)
 
-    @app.route("/api/<path:rest>", methods=["GET", "POST"])
+    @app.route("/api/<path:rest>", methods=["GET", "POST", "PATCH"])
     def api_route(rest):
-        body = request.get_json(silent=True) if request.method == "POST" else {}
+        # Parsed whatever the Content-Type says, as the standard-library
+        # server does, so the two cannot disagree about a request.
+        body = ({} if request.method == "GET"
+                else request.get_json(silent=True, force=True))
+        if request.method != "GET" and body is None:
+            raw = request.get_data()
+            if raw.strip():
+                return Response(json.dumps({"error": "body is not JSON"}),
+                                status=400, mimetype="application/json",
+                                headers={"Cache-Control": "no-store"})
+            body = {}
         header = request.headers.get("Authorization", "")
         token = (header[7:].strip() if header.lower().startswith("bearer ")
                  else request.headers.get("X-Trstenko-Token", ""))
         status, payload = api.dispatch(request.method, "/api/" + rest, body,
-                                       token)
+                                       token, request.args.to_dict())
         return Response(json.dumps(payload), status=status,
                         mimetype="application/json",
                         headers={"Cache-Control": "no-store"})

@@ -19,9 +19,13 @@ firmware on it -- see `auth.py`.
     POST /api/update/cancel     throw away the staged bundle
     POST /api/update/install    unpack it and swap to it
     POST /api/update/revert     go back to the release before this one
+
+    /api/v1/...                 settings and reminders; see v1.py
 """
 
 from firmware.updates import version as version_mod
+
+from .v1 import V1Api
 
 NOT_FOUND = (404, {"error": "no such endpoint"})
 BAD_METHOD = (405, {"error": "wrong method"})
@@ -30,16 +34,18 @@ UNPAIRED = (401, {"error": "pair with the device first",
 
 
 class UpdateApi:
-    def __init__(self, manager, device=None, auth=None):
+    def __init__(self, manager, device=None, auth=None, commander=None):
         self.manager = manager
         self.device = device
+        self.v1 = V1Api(self, commander)
         # No auth object means no lock. Only a test does that, and it has to
         # say so explicitly rather than getting it by forgetting an argument.
         self.auth = auth
 
-    def dispatch(self, method, path, body=None, token=None):
+    def dispatch(self, method, path, body=None, token=None, query=None):
         method = method.upper()
         path = "/" + path.strip("/")
+        raw = body
         body = body if isinstance(body, dict) else {}
 
         if path == "/api/auth":
@@ -49,6 +55,9 @@ class UpdateApi:
 
         if self.auth is not None and not self.auth.check(token):
             return UNPAIRED
+
+        if path == "/api/v1" or path.startswith("/api/v1/"):
+            return self.v1.dispatch(method, path, raw, query)
 
         if path == "/api/update":
             if method != "GET":

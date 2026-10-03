@@ -78,6 +78,19 @@ MAX_SSID = 32            # bytes, by the Wi-Fi standard
 MAX_WIFI_PASSWORD = 63
 MIN_WIFI_PASSWORD = 8
 WORKER = "network"
+
+# What the device says aloud during setup, as well as showing it. Slovenian is
+# unreviewed by a native speaker, like the rest of the device's Slovenian.
+LINES = {
+    "en": {"joining": "Connecting to {ssid}.",
+           "joined": "I'm online.",
+           "join_failed": "I couldn't join {ssid}. Check the password and "
+                          "try again."},
+    "sl": {"joining": "Povezujem se z omre\u017ejem {ssid}.",
+           "joined": "Povezan sem.",
+           "join_failed": "Z omre\u017ejem {ssid} se nisem mogel povezati. "
+                          "Preverite geslo in poskusite znova."},
+}
 POLL = 0.5               # how often the idle worker looks at its stop flag
 
 
@@ -264,7 +277,8 @@ class NetSetup:
     the slow parts. Build it with `wire`."""
 
     def __init__(self, network, post, mono, serial="", pin=None, new_pin=None,
-                 on_log=None, password=new_password, show_pin=None):
+                 on_log=None, password=new_password, show_pin=None,
+                 say=None):
         self.network = network
         self.post = post
         self.mono = mono
@@ -273,6 +287,9 @@ class NetSetup:
         self._new_pin = new_pin
         # The owner may keep the PIN off the screen (settings, security).
         self._show_pin = show_pin or (lambda: True)
+        # `say(key, ssid=...)` speaks one of LINES. The screen says the same
+        # things, so a device with no voice loses nothing.
+        self._say = say or (lambda key, **kw: None)
         self.on_log = on_log or (lambda line: None)
         self._password = password
 
@@ -439,6 +456,7 @@ class NetSetup:
         self.error = ""
         self._deadline = (self.mono() if now is None else now) + SETUP_TIMEOUT
         self.on_log("setup: joining a network")
+        self._say("joining", ssid=ssid)
         return self.status()
 
     def show_info(self):
@@ -488,11 +506,13 @@ class NetSetup:
             self.password = ""
             self._deadline = now + JOINED_HOLD
             self.on_log("setup: online at %s" % (self.address or "?"))
+            self._say("joined", ssid=self.joining)
         elif what == "join_failed" and self.state == JOINING:
             self.error = data.get("error") or "Couldn't join that network."
             self.state = WAITING
             self._deadline = now + SETUP_TIMEOUT
             self.on_log("setup: the join failed")
+            self._say("join_failed", ssid=self.joining)
         elif what == "address":
             if self.state == OFF:
                 self.address = data.get("address")
@@ -564,9 +584,17 @@ def wire(device, network, serial="", pin=None, new_pin=None, check=True):
             return True
         return bool(device.settings.get("security", "show_pin"))
 
+    def say(key, **words):
+        # Through the announcer, as a one-off notice: it waits for a quiet
+        # moment and uses whatever voice the device has.
+        if device.announcer is None:
+            return
+        lines = LINES.get(device.language(), LINES["en"])
+        device.announcer.queue.append(("notice", lines[key].format(**words)))
+
     setup = NetSetup(network, device.events.post, device.mono, serial=serial,
                      pin=pin, new_pin=new_pin, on_log=device.log,
-                     show_pin=show_pin)
+                     show_pin=show_pin, say=say)
     device.netsetup = setup
     device.on(ev.NET_SETUP, setup.handle)
     device.add_step("netsetup", setup.tick, every=1.0)

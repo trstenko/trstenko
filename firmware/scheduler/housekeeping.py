@@ -42,6 +42,12 @@ MAINTENANCE_HOUR = 4
 # Plan 05: usage rows older than 13 months are pruned (usage_daily keeps the
 # totals).
 USAGE_KEPT_SECONDS = 396 * 86400
+# Reminders and timers that are over stay for a month, so "did it remind me
+# last week?" can still be answered, and then go. One that was missed stays
+# three months: it is on the page until its owner dismisses it. Without this
+# the table only ever grows (the soak test counted 84 rows after one day).
+JOBS_KEPT_SECONDS = 30 * 86400
+MISSED_KEPT_SECONDS = 90 * 86400
 
 NORMAL, WARM, HOT = "normal", "warm", "hot"
 
@@ -151,8 +157,15 @@ def standard(scheduler, system, db, post, owner_tz):
         cutoff = scheduler.wall() - USAGE_KEPT_SECONDS
         pruned = conn.execute("DELETE FROM usage WHERE at < ?",
                               (cutoff,)).rowcount
-        log.info("database maintenance done; %d old usage rows pruned",
-                 pruned)
+        now = scheduler.wall()
+        when = "COALESCE(acked_at, fired_at, due_wall, created_at)"
+        jobs = conn.execute(
+            "DELETE FROM jobs WHERE (state IN ('done', 'cancelled', "
+            "'interrupted') AND %s < ?) OR (state = 'missed' AND %s < ?)"
+            % (when, when),
+            (now - JOBS_KEPT_SECONDS, now - MISSED_KEPT_SECONDS)).rowcount
+        log.info("database maintenance done; %d old usage rows and %d "
+                 "finished reminders pruned", pruned, jobs)
 
     hk.at("db_maintenance", next_maintenance, maintenance)
     return state

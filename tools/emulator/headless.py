@@ -3064,6 +3064,15 @@ def scenario_housekeeping_jobs(report, root):
         conn.execute("INSERT INTO usage (at, day, turn_id, provider, model, "
                      "kind, status) VALUES (?, '2026-01-01', 't', 'p', 'm', "
                      "'chat', 'ok')", (at,))
+    day = 86400
+    jobs = (("done", 40), ("done", 5), ("cancelled", 31), ("interrupted", 60),
+            ("missed", 40), ("missed", 100), ("pending", 400))
+    for state, age in jobs:
+        conn.execute(
+            "INSERT INTO jobs (kind, text, due_wall, state, created_at, "
+            "source) VALUES ('reminder', ?, ?, ?, ?, 'web')",
+            ("%s %d" % (state, age), maint.clock.wall() - age * day, state,
+             maint.clock.wall() - age * day))
     maint.run(60.0, 1.0)
     report.check("maintenance does not run on a Saturday afternoon",
                  conn.execute("SELECT COUNT(*) FROM usage").fetchone()[0]
@@ -3073,6 +3082,10 @@ def scenario_housekeeping_jobs(report, root):
     left = conn.execute("SELECT COUNT(*) FROM usage").fetchone()[0]
     report.check("on Sunday at 04:00 it runs, and drops usage rows older "
                  "than 13 months", left == 1, str(left))
+    kept = sorted(r[0] for r in conn.execute("SELECT text FROM jobs"))
+    report.check("finished reminders older than a month go, missed ones "
+                 "after three; recent ones and anything still pending stay",
+                 kept == ["done 5", "missed 40", "pending 400"], str(kept))
     maint.run(86400.0 / 4, 600.0)
     report.check("and keeps the recent ones",
                  conn.execute("SELECT COUNT(*) FROM usage").fetchone()[0]
@@ -3773,6 +3786,7 @@ def main(argv=None):
         ("setup mode on a new device", setup_scenarios.scenario_setup_new_device),
         ("setup mode: the scan list, the code and the card",
          setup_scenarios.scenario_setup_parts),
+        ("setup mode, spoken", setup_scenarios.scenario_setup_spoken),
         ("factory reset", setup_scenarios.scenario_factory_reset),
         ("the address and PIN on a long press",
          setup_scenarios.scenario_info_card),

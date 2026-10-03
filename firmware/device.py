@@ -745,6 +745,12 @@ class Device:
             return "face_idle"
         if now < self._next_act or self.face.progress(now) < 1.0:
             return "face_idle"
+        if (self.settings is not None
+                and not self.settings.get("screen", "idle_animations")):
+            # Switched off on the page. Checked when one is due, so turning
+            # it back on does not play one that instant.
+            self._next_act = now + self._rng.uniform(*IDLE_ACT_EVERY)
+            return "face_idle"
         if self._thermal != NORMAL:
             # An act draws at 30Hz. A warm board keeps its slow idle.
             self._next_act = now + self._rng.uniform(*IDLE_ACT_EVERY)

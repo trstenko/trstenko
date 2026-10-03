@@ -104,6 +104,8 @@
   "screen": "Zaslon",
   "sleep_after": "Zaslon zaspi po",
   "night_off": "Ponoči izklopi zaslon",
+  "idle_animations": "Animacije v mirovanju",
+  "idle_animations_hint": "Vsakih nekaj minut obraz nekaj naredi: pogleda naokrog, zazeha, zadrema.",
   "listening": "Poslušanje",
   "wake_sensitivity": "Občutljivost prebujevalne besede",
   "wake_low": "Nizka",

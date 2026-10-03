@@ -244,6 +244,20 @@ def scenario_idle_acts(report, root):
                  rig.device.face.current == "face_listening",
                  rig.device.face.current)
 
+    # Switched off on the page: the idle face only blinks and breathes.
+    class _Off:
+        def get(self, section, key):
+            return False
+    quiet = Rig(os.path.join(root, "idle-acts-off"))
+    quiet.device.settings = _Off()
+    quiet.step(4.0)
+    seen = set()
+    for _ in range(int(device_mod.IDLE_ACT_EVERY[1] * 2)):
+        quiet.step(1.0)
+        seen.add(quiet.device.face.current)
+    report.check("with the setting off no act ever plays",
+                 seen == {"face_idle"}, str(sorted(seen)))
+
     # Every frame of every act stays inside what the panel is sent.
     states = state_defs.build()
     renderer = FaceRenderer(ssaa=1)

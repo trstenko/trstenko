@@ -664,3 +664,52 @@ def scenario_page_gzip(report, root):
         server.shutdown()
         server.server_close()
         r.close()
+
+
+def scenario_setup_spoken(report, root):
+    """Setup says what it is doing, through the announcer, in the owner's
+    language."""
+    from .headless import SchedRig
+
+    for lang, joining, failed, online in (
+            ("en", "Connecting to Home.", "I couldn't join Home. Check the "
+             "password and try again.", "I'm online."),
+            ("sl", "Povezujem se z omrežjem Home.", "Z omrežjem "
+             "Home se nisem mogel povezati. Preverite geslo in poskusite "
+             "znova.", "Povezan sem.")):
+        rig = SchedRig(root, "setupvoice-" + lang,
+                       settings_patch={"owner": {"language": lang}})
+        net = FakeNetwork(saved=True)
+        setup = netsetup.wire(rig.device, net, serial=SERIAL,
+                              pin=lambda: "123456", check=False)
+
+        def settle(condition):
+            end = time.monotonic() + 3.0
+            while time.monotonic() < end and not condition():
+                rig.run(0.5, 0.25)
+                time.sleep(0.005)
+            return condition()
+
+        try:
+            setup.begin()
+            settle(lambda: setup.state == netsetup.WAITING)
+            net.fail_join = True
+            setup.join("Home", "wrong-password")
+            settle(lambda: setup.state == netsetup.WAITING)
+            rig.run(20.0, 0.25)
+            net.fail_join = False
+            setup.join("Home", "right-password")
+            settle(lambda: setup.state == netsetup.JOINED)
+            rig.run(20.0, 0.25)
+            report.check("in %s it says it is connecting, that the join "
+                         "failed, and that it is online" % lang,
+                         [line for line in rig.said
+                          if line in (joining, failed, online)]
+                         == [joining, failed, joining, online],
+                         str(rig.said))
+            report.check("and never says a password",
+                         not any("password1" in line or "wrong-password"
+                                 in line for line in rig.said))
+        finally:
+            setup.close()
+            rig.close()

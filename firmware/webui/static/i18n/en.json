@@ -255,7 +255,7 @@
   "paused_note": "Questions are paused. Timers, reminders and the clock still work.",
   "percent_of_limit": "{n}% of limit",
   "pin_from_screen": "PIN from Trstenko’s screen",
-  "pin_help": "Trstenko shows a 6-digit PIN on its screen.",
+  "pin_help": "Trstenko shows the PIN on its screen.",
   "pin_hint": "The PIN changes each time Trstenko restarts.",
   "pin_title": "Enter the PIN",
   "pin_wrong": "That is not the PIN on Trstenko’s screen.",
@@ -325,5 +325,13 @@
   "reset_body": "Memories, reminders, usage, API keys, settings and the Wi-Fi are all removed, and Trstenko restarts. This can’t be undone.",
   "reset_action": "Reset everything",
   "reset_done": "Trstenko is starting again as new.",
-  "reset_done_body": "In a minute its screen shows a Wi-Fi code and a new PIN. Join that Wi-Fi to set it up again."
+  "reset_done_body": "In a minute its screen shows a Wi-Fi code and a new PIN. Join that Wi-Fi to set it up again.",
+  "pin_card": "Pairing PIN",
+  "pin_show": "Show the PIN on Trstenko’s screen",
+  "pin_show_hint": "On a long press of a volume button, and after joining Wi-Fi. Setup always shows it.",
+  "pin_current": "Current PIN",
+  "pin_new": "New PIN",
+  "pin_new_hint": "6 to 10 digits. Other phones and tabs are signed out.",
+  "pin_change": "Change PIN",
+  "pin_changed": "The PIN is changed."
 }

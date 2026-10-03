@@ -55,6 +55,11 @@ DEFAULTS = {
     "screen": {"sleep_after_min": 10, "night_off": True},
     "budget": {"monthly_usd": 5.0, "daily_usd": None, "daily_turns": None,
                "max_output_tokens": 300, "max_tool_steps": 4},
+    # Whether the screen may show the pairing PIN on a long volume press and
+    # after joining Wi-Fi. An owner who chose their own PIN can turn it off.
+    # The setup card always shows it: setup makes a new random PIN, and a PIN
+    # nobody can read is a device nobody can pair with.
+    "security": {"show_pin": True},
     "prices_override": {},
 }
 
@@ -100,6 +105,8 @@ RULES = {
     ("quiet", "from"): ("clock",),
     ("quiet", "to"): ("clock",),
     ("quiet", "volume"): ("float", 0.0, 1.0),
+
+    ("security", "show_pin"): ("bool",),
 
     ("screen", "sleep_after_min"): ("int", 1, 1440),
     ("screen", "night_off"): ("bool",),

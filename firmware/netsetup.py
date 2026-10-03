@@ -264,13 +264,15 @@ class NetSetup:
     the slow parts. Build it with `wire`."""
 
     def __init__(self, network, post, mono, serial="", pin=None, new_pin=None,
-                 on_log=None, password=new_password):
+                 on_log=None, password=new_password, show_pin=None):
         self.network = network
         self.post = post
         self.mono = mono
         self.serial = serial
         self._pin = pin or (lambda: "")
         self._new_pin = new_pin
+        # The owner may keep the PIN off the screen (settings, security).
+        self._show_pin = show_pin or (lambda: True)
         self.on_log = on_log or (lambda line: None)
         self._password = password
 
@@ -531,11 +533,16 @@ class NetSetup:
             return {"mode": "joining", "ssid": self.joining}
         if self.state == JOINED:
             return {"mode": "online", "url": HOME_URL,
-                    "address": self.address, "pin": self._pin()}
+                    "address": self.address, "pin": self._shown_pin()}
         if self.mono() < self._info_until:
             return {"mode": "info", "url": HOME_URL,
-                    "address": self.address, "pin": self._pin()}
+                    "address": self.address, "pin": self._shown_pin()}
         return None
+
+    def _shown_pin(self):
+        """The PIN for a card, or None when the owner has hidden it. The setup
+        card does not ask: it always shows the PIN (see `card`)."""
+        return self._pin() if self._show_pin() else None
 
     def status(self):
         """For the page. Never a password, and never the PIN."""
@@ -552,8 +559,14 @@ def wire(device, network, serial="", pin=None, new_pin=None, check=True):
     pairing PIN for the card and `new_pin` makes a fresh one."""
     from .face import setupcard
 
+    def show_pin():
+        if device.settings is None:
+            return True
+        return bool(device.settings.get("security", "show_pin"))
+
     setup = NetSetup(network, device.events.post, device.mono, serial=serial,
-                     pin=pin, new_pin=new_pin, on_log=device.log)
+                     pin=pin, new_pin=new_pin, on_log=device.log,
+                     show_pin=show_pin)
     device.netsetup = setup
     device.on(ev.NET_SETUP, setup.handle)
     device.add_step("netsetup", setup.tick, every=1.0)

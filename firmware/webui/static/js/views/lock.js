@@ -8,7 +8,7 @@ export async function render(root) {
   const face = createFace(t("face_asleep"));
   face.sleep();
   const pin = input({id: "pin", class: "input input-pin", inputmode: "numeric", pattern: "[0-9]*",
-    maxlength: "6", autocomplete: "one-time-code", placeholder: "······",
+    maxlength: "10", autocomplete: "one-time-code", placeholder: "······",
     "aria-describedby": "pin-msg"});
   const message = h("p", {id: "pin-msg", "aria-live": "polite"});
   const submit = h("button", {class: "btn btn-primary btn-lg btn-block", type: "submit"}, t("unlock"));

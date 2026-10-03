@@ -498,3 +498,169 @@ def scenario_captive_portal(report, root):
         server.shutdown()
         server.server_close()
         r.close()
+
+
+def scenario_pin_options(report, root):
+    """The owner's own PIN, and keeping the PIN off the screen."""
+    from firmware.storage import settings as settings_mod
+    from firmware.webui.auth import weak_pin
+
+    refused = [p for p in ("123456", "000000", "987654", "90123456", "12345",
+                           "48291a", "12345678901", None)
+               if weak_pin(p) is None]
+    report.check("a PIN that is too short, not digits, one digit repeated or "
+                 "a run is refused", not refused
+                 and weak_pin("482915") is None
+                 and weak_pin("4829154829") is None, str(refused))
+
+    r = SetupRig(root, "pinoptions")
+    try:
+        settings = settings_mod.Settings.load(
+            settings_mod.default_path(os.path.join(root, "pinoptions")))
+        r.device.settings = settings
+        r.rig.step(4.0)
+        r.net.joined = "Home"
+        old = r.auth.pin
+        other = r.api.dispatch("POST", "/api/auth", {"pin": old})[1]["token"]
+
+        status, out = r.call("POST", "/api/v1/pin",
+                             {"pin": "999999" if old != "999999" else "888888",
+                              "new_pin": "482915"})
+        report.check("changing the PIN needs the current one",
+                     status == 403 and r.auth.pin == old, str(out))
+        status, out = r.call("POST", "/api/v1/pin",
+                             {"pin": old, "new_pin": "111111"})
+        report.check("a weak new PIN is refused with the reason",
+                     status == 400 and "PIN" in out["error"]
+                     and r.auth.pin == old, str(out))
+        status, out = r.call("POST", "/api/v1/pin",
+                             {"pin": old, "new_pin": "48291537"})
+        report.check("the owner's own PIN is accepted, and is not sent back",
+                     status == 200 and out == {"ok": True}
+                     and r.auth.pin == "48291537")
+        report.check("this session stays paired and every other one is "
+                     "signed out",
+                     r.call("GET", "/api/v1/setup")[0] == 200
+                     and not r.auth.check(other))
+        report.check("the old PIN no longer pairs and the new one does",
+                     r.api.dispatch("POST", "/api/auth", {"pin": old})[0] == 401
+                     and r.api.dispatch("POST", "/api/auth",
+                                        {"pin": "48291537"})[0] == 200)
+        again = Auth(os.path.join(root, "pinoptions"), clock=lambda: r.rig.t)
+        report.check("it survives a restart", again.pin == "48291537")
+        report.check("the PIN is in no log line",
+                     not any("48291537" in line for line in r.rig.logs))
+
+        def long_press():
+            r.rig.hal.press(VOL_UP)
+            r.rig.step(1.0)
+            r.rig.hal.release(VOL_UP)
+            r.settle(lambda: r.setup.card() is not None)
+            return r.setup.card() or {}
+
+        report.check("by default a long press shows it",
+                     long_press().get("pin") == "48291537")
+        r.rig.step(netsetup.INFO_HOLD + 1.0)
+        status, out = r.call("PATCH", "/api/v1/settings",
+                             {"security": {"show_pin": False}})
+        card = long_press()
+        image = setupcard.draw(dict(card))
+        report.check("with showing turned off, the card has the address and "
+                     "no PIN", status == 200 and card.get("mode") == "info"
+                     and card["pin"] is None and card["address"]
+                     and image.size == (320, 240), str(card))
+        r.rig.step(netsetup.INFO_HOLD + 1.0)
+
+        r.hold_both()
+        r.settle(lambda: r.setup.state == netsetup.WAITING)
+        card = r.setup.card()
+        report.check("the setup card still shows the PIN, which the gesture "
+                     "has just replaced with a random one",
+                     card["pin"] == r.auth.pin and r.auth.pin != "48291537"
+                     and len(r.auth.pin) == 6)
+    finally:
+        r.close()
+
+
+def scenario_page_gzip(report, root):
+    """A release carries gzipped copies of the page's text files, and the
+    servers hand them to a browser that accepts gzip."""
+    import gzip
+    import http.client
+    import tarfile
+
+    from firmware.webui import serve
+    from firmware.webui import server as server_mod
+
+    from . import bundle
+
+    path = os.path.join(root, "gzip-bundle.tar.gz")
+    bundle.build(path, "9.9.9")
+    with tarfile.open(path) as archive:
+        names = set(archive.getnames())
+        packed = archive.extractfile(
+            "firmware/webui/static/app.css.gz").read()
+    with open(os.path.join(server_mod.STATIC, "app.css"), "rb") as fh:
+        plain = fh.read()
+    page = "firmware/webui/static/"
+    report.check("the bundle has a gzipped copy of each text file of the "
+                 "page, and the original",
+                 all(page + n in names and page + n + ".gz" in names
+                     for n in ("index.html", "app.css", "app.js",
+                               "js/core.js", "i18n/sl.json"))
+                 and gzip.decompress(packed) == plain
+                 and len(packed) < len(plain) / 2,
+                 "%d -> %d" % (len(plain), len(packed)))
+    report.check("fonts and images are not compressed again, and nothing "
+                 "outside the page is",
+                 page + "fonts/quicksand.woff2.gz" not in names
+                 and page + "icons/icon-32.png.gz" not in names
+                 and not any(n.endswith(".gz") and not n.startswith(page)
+                             for n in names))
+    report.check("the same page makes the same bytes",
+                 packed == gzip.compress(plain, 9, mtime=0))
+
+    # Serve a folder laid out like a release, with one file that has a copy.
+    static = os.path.join(root, "gzip-static")
+    os.makedirs(static, exist_ok=True)
+    body = b"body { color: teal; }\n" * 40
+    for name, data in (("index.html", b"<p>hello</p>"), ("app.css", body),
+                       ("app.css.gz", gzip.compress(body))):
+        with open(os.path.join(static, name), "wb") as fh:
+            fh.write(data)
+    real = server_mod.STATIC
+    server_mod.STATIC = static
+    r = SetupRig(root, "gzipserver")
+    server = serve(r.api, host="127.0.0.1", port=0)
+    port = server.server_address[1]
+
+    def get(name, accept):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", name, headers={"Accept-Encoding": accept}
+                     if accept else {})
+        response = conn.getresponse()
+        got = (response.status, response.getheader("Content-Encoding"),
+               response.getheader("Content-Type"), response.read(),
+               response.getheader("Vary"))
+        conn.close()
+        return got
+
+    try:
+        status, coding, kind, data, vary = get("/app.css", "gzip, deflate")
+        report.check("a browser that accepts gzip gets the small copy, "
+                     "labelled as the stylesheet it is",
+                     status == 200 and coding == "gzip" and kind == "text/css"
+                     and vary == "Accept-Encoding"
+                     and gzip.decompress(data) == body)
+        status, coding, _, data, _ = get("/app.css", None)
+        report.check("one that does not gets the file as it is",
+                     status == 200 and coding is None and data == body)
+        status, coding, _, data, _ = get("/", "gzip")
+        report.check("a file with no gzipped copy is served as it is",
+                     status == 200 and coding is None
+                     and data == b"<p>hello</p>")
+    finally:
+        server_mod.STATIC = real
+        server.shutdown()
+        server.server_close()
+        r.close()

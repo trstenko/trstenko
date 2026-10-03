@@ -135,20 +135,37 @@ class _Handler(BaseHTTPRequestHandler):
         if not target.startswith(STATIC) or not os.path.isfile(target):
             self._send(404, b"not found", "text/plain")
             return
-        with open(target, "rb") as fh:
-            data = fh.read()
         ext = os.path.splitext(target)[1]
-        self._send(200, data, TYPES.get(ext, "application/octet-stream"))
+        # A release carries a gzipped copy of each text file beside it
+        # (tools/emulator/bundle.py). A checkout has none, and serves as is.
+        packed = accepts_gzip(self.headers.get("Accept-Encoding")) \
+            and os.path.isfile(target + ".gz")
+        with open(target + ".gz" if packed else target, "rb") as fh:
+            data = fh.read()
+        self._send(200, data, TYPES.get(ext, "application/octet-stream"),
+                   gzipped=packed)
 
-    def _send(self, status, body, content_type):
+    def _send(self, status, body, content_type, gzipped=False):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        if gzipped:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         for name, value in SECURITY_HEADERS.items():
             self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
+
+
+def accepts_gzip(header):
+    """Does this `Accept-Encoding` header take gzip?"""
+    for part in (header or "").lower().split(","):
+        name, _, params = part.strip().partition(";")
+        if name.strip() in ("gzip", "*"):
+            return params.replace(" ", "") not in ("q=0", "q=0.0")
+    return False
 
 
 def serve(api, host="0.0.0.0", port=8080, background=True):

@@ -196,7 +196,7 @@ export function confirmSheet({title, body, action, cancel, pin, run}) {
     const before = document.activeElement;
     const error = h("p", {class: "result err", role: "alert", hidden: true});
     const pinBox = pin ? input({id: "sheet-pin", class: "input input-pin sm", inputmode: "numeric",
-      pattern: "[0-9]*", maxlength: "6", autocomplete: "off", placeholder: "······"}) : null;
+      pattern: "[0-9]*", maxlength: "10", autocomplete: "off", placeholder: "······"}) : null;
     const go = h("button", {class: "btn btn-danger btn-lg btn-block", type: "submit"}, action);
     const keep = h("button", {class: "btn btn-lg btn-block", type: "button"}, cancel || t("cancel"));
     const scrim = h("div", {class: "scrim"});

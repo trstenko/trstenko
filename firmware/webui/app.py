@@ -18,7 +18,9 @@ from .headers import MAX_BODY, SECURITY_HEADERS
 def create_app(manager, device=None, auth=None):
     from flask import Flask, Response, request, send_from_directory
 
-    from .server import STATIC
+    import os
+
+    from .server import STATIC, accepts_gzip
 
     api = UpdateApi(manager, device, auth)
     app = Flask(__name__, static_folder=None)
@@ -46,6 +48,18 @@ def create_app(manager, device=None, auth=None):
 
     @app.get("/<path:name>")
     def static_file(name):
+        # The gzipped copy a release carries, for a browser that takes it.
+        if accepts_gzip(request.headers.get("Accept-Encoding")) \
+                and not name.endswith(".gz"):
+            target = os.path.normpath(os.path.join(STATIC, name + ".gz"))
+            if target.startswith(STATIC) and os.path.isfile(target):
+                response = send_from_directory(STATIC, name + ".gz")
+                plain = send_from_directory(STATIC, name)
+                response.headers["Content-Type"] = plain.headers[
+                    "Content-Type"]
+                response.headers["Content-Encoding"] = "gzip"
+                response.headers["Vary"] = "Accept-Encoding"
+                return response
         return send_from_directory(STATIC, name)
 
     @app.route("/api/<path:rest>", methods=["GET", "POST", "PATCH", "DELETE"])

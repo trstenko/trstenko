@@ -255,7 +255,7 @@
   "paused_note": "Vprašanja so ustavljena. Časovniki, opomniki in ura še delujejo.",
   "percent_of_limit": "{n} % omejitve",
   "pin_from_screen": "PIN s Trstenkovega zaslona",
-  "pin_help": "Trstenko na zaslonu prikaže 6-mestni PIN.",
+  "pin_help": "Trstenko prikaže PIN na zaslonu.",
   "pin_hint": "PIN se spremeni ob vsakem ponovnem zagonu Trstenka.",
   "pin_title": "Vnesite PIN",
   "pin_wrong": "To ni PIN s Trstenkovega zaslona.",
@@ -325,5 +325,13 @@
   "reset_body": "Spomini, opomniki, poraba, ključi API, nastavitve in Wi-Fi se odstranijo, Trstenko pa se znova zažene. Tega ni mogoče razveljaviti.",
   "reset_action": "Ponastavi vse",
   "reset_done": "Trstenko se zaganja kot nov.",
-  "reset_done_body": "Čez minuto bo na zaslonu koda za Wi-Fi in nov PIN. Povežite se s tem Wi-Fi in ga znova nastavite."
+  "reset_done_body": "Čez minuto bo na zaslonu koda za Wi-Fi in nov PIN. Povežite se s tem Wi-Fi in ga znova nastavite.",
+  "pin_card": "PIN za povezavo",
+  "pin_show": "Pokaži PIN na Trstenkovem zaslonu",
+  "pin_show_hint": "Ob dolgem pritisku gumba za glasnost in po povezavi z Wi-Fi. Nastavitev ga vedno pokaže.",
+  "pin_current": "Trenutni PIN",
+  "pin_new": "Novi PIN",
+  "pin_new_hint": "6 do 10 številk. Drugi telefoni in zavihki se odjavijo.",
+  "pin_change": "Spremeni PIN",
+  "pin_changed": "PIN je spremenjen."
 }

@@ -24,6 +24,7 @@
   "time_is": "Zdaj je {time}.",
   "time_unknown": "Časa še ne poznam.", 
   "snoozed": "V redu, odloženo.",
+  "err_not_done": "Oprostite, tega mi ni uspelo narediti, zato ni nič nastavljeno. Prosim, poskusite znova.",
   "err_stuck": "Oprostite, s tem imam težave.",
   "key_test_ok": "Pozdravljeni! Zdaj lahko razmišljam. Ta ključ deluje.",
   "short_version": "To je kratka različica.",

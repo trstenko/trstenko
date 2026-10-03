@@ -3706,6 +3706,8 @@ def main(argv=None):
         ("cutting and cleaning speech", asst.scenario_speech_text),
         ("the prompt and the session", asst.scenario_prompt_and_session),
         ("the tool loop", asst.scenario_loop),
+        ("the tool loop: promises with nothing behind them",
+         asst.scenario_loop_promises),
         ("the tool loop: cancelling", asst.scenario_loop_cancel),
         ("the tool loop: every way it can fail", asst.scenario_loop_failures),
         ("the tool loop: audio in the request", asst.scenario_loop_audio),

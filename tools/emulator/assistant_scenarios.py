@@ -2752,6 +2752,160 @@ def scenario_loop(report, root):
         rig.close()
 
 
+def scenario_loop_promises(report, root):
+    """A model that says "I'll set that" and calls no tool: the sentence is not
+    spoken, the model is told once, and failing that the device owns up."""
+    from firmware.assistant import promises
+
+    said = ("I'll set that.", "Setting that timer now.", "Timer set for ten "
+            "minutes.", "I've saved that.", "I'll remind you to stretch.")
+    plain = ("Shall I set a timer?", "For how long?", "You're welcome.",
+             "I cannot play music.", "I can set timers and reminders.")
+    report.check("sentences that claim a job is done, or will be, are told "
+                 "from ones that do not",
+                 all(promises.looks_like_promise(s) for s in said)
+                 and not any(promises.looks_like_promise(s) for s in plain))
+    slovene = ("To bom uredil.", "Zbudil te bom.", "To si bom zapomnil.",
+               "Prav, budim te čez uro in pol.", "V redu, shranjeno.")
+    not_slovene = ("Kdaj pa želiš, da te opomnim?", "Ni za kaj.",
+                   "Žal ne morem predvajati glasbe.")
+    report.check("in Slovenian too, with the phrases the evaluation recorded",
+                 all(promises.looks_like_promise(s, "sl") for s in slovene)
+                 and not any(promises.looks_like_promise(s, "sl")
+                             for s in not_slovene))
+
+    rig = LoopRig(root, "promises")
+    try:
+        fake = rig.fake
+
+        # 1. A promise, then, once told, the real call.
+        fake.queue(fp.text("I'll set that."),
+                   fp.calls(("set_timer", {"seconds": 600, "label": ""})))
+        r = rig.run("set a timer for ten minutes please")
+        nudge = fake.chat_requests()[-1].json["messages"][-1]
+        report.check("a promise with no tool call is not spoken; the model is "
+                     "told nothing happened, and then it calls the tool",
+                     r.ok and r.tools == ["set_timer"] and not r.unkept
+                     and rig.sentences == ["Timer set for ten minutes."]
+                     and nudge["role"] == "user"
+                     and "called no tool" in nudge["content"],
+                     "%s %s" % (rig.sentences, r.tools))
+        kept = json.dumps(r.produced)
+        report.check("the promise and the telling-off are not kept in the "
+                     "conversation", "I'll set that" not in kept
+                     and "called no tool" not in kept)
+        report.check("and a timer really is set",
+                     len(rig.tools.rig.jobs("pending")) == 1)
+
+        # 2. A promise twice over: say so, set nothing.
+        fake.clear()
+        fake.queue(fp.text("Setting that timer now."),
+                   fp.text("Okay, I've set it."))
+        r = rig.run("could you time five minutes for me")
+        report.check("a model that promises twice is not believed: the device "
+                     "says it could not, and nothing more was set",
+                     r.unkept and rig.sentences == [
+                         "Sorry, I couldn't do that, so nothing was set. "
+                         "Please ask me again."]
+                     and r.failure_key() == "err_not_done"
+                     and len(fake.chat_requests()) == 2
+                     and len(rig.tools.rig.jobs("pending")) == 1,
+                     str(rig.sentences))
+
+        # 3. The promise and the call in one reply: true, so it is spoken.
+        fake.clear()
+        fake.queue(fp.calls(("set_timer", {"seconds": 60, "label": "egg"}),
+                            say="I'll set that."),
+                   fp.text("One minute, starting now."))
+        r = rig.run("one minute for an egg")
+        report.check("said together with a call that worked, the same "
+                     "sentence is spoken",
+                     r.ok and rig.sentences == ["I'll set that.",
+                                                "One minute, starting now."],
+                     str(rig.sentences))
+
+        # 4. The promise and a call that fails: the promise is dropped.
+        fake.clear()
+        fake.queue(fp.calls(("set_timer", {"seconds": 0}), say="I'll set "
+                            "that."),
+                   fp.text("A timer has to be at least a second long. How "
+                           "long would you like?"))
+        r = rig.run("set a timer for no time at all")
+        report.check("said together with a call that failed, it is dropped "
+                     "and the reason is what gets said",
+                     r.ok and "I'll set that." not in rig.sentences
+                     and rig.sentences[-1].endswith("?"), str(rig.sentences))
+
+        # 5. A tool that failed, and then a claim that it worked.
+        fake.clear()
+        fake.queue(fp.calls(("set_timer", {"seconds": 0})),
+                   fp.text("Timer set."), fp.text("Done."))
+        r = rig.run("timer please")
+        report.check("after a tool that failed, a claim of success is not "
+                     "spoken either",
+                     r.unkept and rig.sentences == [
+                         "Sorry, I couldn't do that, so nothing was set. "
+                         "Please ask me again."], str(rig.sentences))
+
+        # A bare yes is a promise; a yes that goes on to ask is not; and a
+        # yes that was only small talk gets its second go and is spoken.
+        fake.clear()
+        fake.queue(fp.text("Okay."), fp.text("Sure."))
+        r = rig.run("wake me in an hour and a half")
+        report.check("a bare 'Okay.' with no tool call, twice, is not "
+                     "believed either", r.unkept and len(rig.sentences) == 1
+                     and "couldn't do that" in rig.sentences[0],
+                     str(rig.sentences))
+        fake.clear()
+        fake.queue(fp.text("Okay. For how long?"))
+        r = rig.run("set a timer")
+        report.check("'Okay. For how long?' ends by asking, so it is spoken "
+                     "with no second request",
+                     r.ok and rig.sentences == ["Okay.", "For how long?"]
+                     and len(fake.chat_requests()) == 1, str(rig.sentences))
+        fake.clear()
+        fake.queue(fp.text("Okay."), fp.text("You're welcome."))
+        r = rig.run("thanks")
+        report.check("a bare yes that was only small talk costs one more "
+                     "request and then says something true",
+                     r.ok and not r.unkept
+                     and rig.sentences == ["You're welcome."],
+                     str(rig.sentences))
+
+        # 6. Ordinary talk and questions are untouched, and cost no time.
+        fake.clear()
+        fake.queue(fp.text("Shall I set a timer for the pasta?"))
+        r = rig.run("i am cooking pasta")
+        report.check("a question that mentions a job is spoken as it is, "
+                     "with no second request",
+                     r.ok and rig.sentences == ["Shall I set a timer for the "
+                                                "pasta?"]
+                     and len(fake.chat_requests()) == 1)
+        fake.clear()
+        fake.queue(fp.calls(("list_reminders", {})),
+                   fp.text("You have one timer set for ten minutes."))
+        r = rig.run("what is running")
+        report.check("after a tool that worked, the model's own words about "
+                     "it are spoken",
+                     r.ok and rig.sentences == ["You have one timer set for "
+                                                "ten minutes."],
+                     str(rig.sentences))
+    finally:
+        rig.close()
+
+    sl = LoopRig(root, "promises-sl", lang="sl")
+    try:
+        sl.fake.queue(fp.text("Zbudil te bom."), fp.text("Bom, takoj uredim."))
+        r = sl.run("zbudi me čez uro in pol")
+        report.check("in Slovenian the same: 'Zbudil te bom' with no tool is "
+                     "not spoken, and the device says it could not",
+                     r.unkept and len(sl.sentences) == 1
+                     and "ni nič nastavljeno" in sl.sentences[0],
+                     str(sl.sentences))
+    finally:
+        sl.close()
+
+
 def scenario_loop_cancel(report, root):
     rig = LoopRig(root, "loopcancel")
     fake = rig.fake
@@ -4426,7 +4580,8 @@ def scenario_assistant_turn(report, root):
                      capture["followup"] and capture["id"].endswith(".2")
                      and rig.device.turn is not None
                      and rig.device.turn.stage == pipe.LISTENING, str(capture))
-        fake.queue(fp.text("<heard>tomorrow</heard>Done.", usage=(300, 5)))
+        fake.queue(fp.text("<heard>tomorrow</heard>Tomorrow it is.",
+                           usage=(300, 5)))
         rig.hear()
         report.check("and the answer is a second exchange, then it is over",
                      rig.finished() and len(rig.plays()) == 2)

@@ -403,9 +403,11 @@ class Worker:
         if result.cancelled or cancel.is_set():
             return
         key = result.failure_key()
-        if key:
+        if key and strings(key) not in result.sentences:
+            # The loop has already spoken some of these itself (being stuck,
+            # a promise it could not keep); once is enough.
             self._say(job.turn_id, strings(key))
-        if result.ok and not result.stuck and not result.empty:
+        if result.ok and not result.stuck and not result.empty                 and not result.unkept:
             self.session.end_turn(result.transcript or transcript or "(spoken)",
                                   result.produced)
         else:

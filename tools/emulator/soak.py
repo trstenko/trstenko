@@ -252,9 +252,12 @@ def run(hours, report, root, say=print):
                      grew < MEMORY_SLACK, "%d bytes" % grew)
     else:
         say("  (memory could not be read on this platform)")
+    # Counted for the whole process, so only a full run is judged on it: inside
+    # the ordinary suite other scenarios' threads come and go meanwhile.
     report.check("no thread per turn: %d threads after warm-up, %d at the end"
                  % (first["threads"], last["threads"]),
-                 last["threads"] <= first["threads"] + 1)
+                 hours < WARM_UP_HOURS
+                 or last["threads"] <= first["threads"] + 1)
     report.check("the event queue and the conversation history stay short",
                  max(s["events"] for s in samples) < 50
                  and max(s["history"] for s in samples) <= 40,

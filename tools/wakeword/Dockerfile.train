@@ -1,0 +1,31 @@
+# .wav files -> spectrogram features -> trained, quantized, streaming
+# .tflite. Apache-2.0 top to bottom (TensorFlow, microWakeWord).
+FROM tensorflow/tensorflow:2.18.0-gpu
+
+WORKDIR /work
+
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+        audiomentations \
+        audio_metadata \
+        "datasets>=2.14,<3.0" \
+        mmap_ninja \
+        "numpy>=2.0" \
+        pymicro-features \
+        pyyaml \
+        webrtcvad-wheels \
+        ai-edge-litert \
+        pymicro-wakeword \
+        scipy
+
+# Not `pip install git+...`: microwakeword/audio/ has no `__init__.py` in the
+# upstream repo, so setuptools.find_packages() silently drops that
+# subpackage from the wheel (`microwakeword.audio.augmentation` etc. -- the
+# whole point of this pipeline -- would 404 on import). Clone and put it on
+# the path instead, same fix as Dockerfile.generate needed for piper_train.
+RUN git clone --depth 1 https://github.com/OHF-Voice/micro-wake-word /work/micro-wake-word
+ENV PYTHONPATH=/work/micro-wake-word:${PYTHONPATH}
+
+CMD ["bash"]

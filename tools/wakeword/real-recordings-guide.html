@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trstenko — adding real recordings to training</title>
+<style>
+  :root {
+    --bg: #0b0f12; --surface: #151d22; --line: #243137;
+    --ink: #c8d4d8; --dim: #8a9ba3; --teal: #4fb3d1;
+    --amber: #d1a04f; --green: #5fc98a; --red: #d17a70;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--ink); margin: 0;
+    font: 15px/1.6 -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 40px 20px 80px; }
+  h1 { font-size: 24px; margin: 0 0 6px; }
+  .sub { color: var(--dim); margin-bottom: 36px; font-size: 14px; }
+  h2 {
+    font-size: 17px; margin: 44px 0 12px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  h2 .step { color: var(--teal); font-weight: normal; }
+  p { margin: 0 0 12px; }
+  code, pre {
+    font: 13px/1.5 Consolas, "SF Mono", monospace;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 4px;
+  }
+  code { padding: 1px 6px; }
+  pre { padding: 12px 14px; overflow-x: auto; margin: 0 0 14px; }
+  pre code { background: none; border: none; padding: 0; }
+  ul, ol { padding-left: 22px; margin: 0 0 14px; }
+  li { margin-bottom: 6px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 6px; padding: 16px 18px; margin: 16px 0;
+  }
+  .card.warn { border-color: var(--amber); }
+  .card.ok { border-color: var(--green); }
+  .card p:last-child { margin-bottom: 0; }
+  .path { color: var(--teal); }
+  table { border-collapse: collapse; width: 100%; margin: 0 0 14px; font-size: 14px; }
+  th, td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: normal; font-size: 12px; }
+  .checklist { list-style: none; padding-left: 0; }
+  .checklist li { padding-left: 28px; position: relative; }
+  .checklist li::before {
+    content: "☐"; position: absolute; left: 0; color: var(--dim);
+  }
+  footer { margin-top: 50px; color: var(--dim); font-size: 13px; }
+  a { color: var(--teal); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Adding real recordings to wake-word training</h1>
+<div class="sub">
+  Trstenko project — <code>tools/wakeword/</code>. This is "Step B": the
+  thing that actually moves the model past "works on synthetic voices" toward
+  "works on a real person in a real room." Pairs with
+  <code>TRAINING_GUIDE.md</code>, which covers what the training numbers mean.
+</div>
+
+<div class="card warn">
+  <p><strong>Why this step exists.</strong> The model trained so far only
+  ever heard synthetic text-to-speech voices and computer-generated noise.
+  It scores perfectly against more of the same — that doesn't tell you
+  whether it recognizes an actual human voice through an actual microphone.
+  This step adds the one kind of data that answers that question.</p>
+</div>
+
+<h2><span class="step">Step 1 —</span> record the wake word</h2>
+<p>Get a handful of people (the more voices, the better it generalizes) to
+say <strong>"Trstenko"</strong> out loud, several times each. A phone voice
+recorder is fine for a first pass — it doesn't need to be the final hardware.</p>
+<ul>
+  <li><strong>How many:</strong> 20–50 recordings is a useful start. More is
+  better, but even 20 real ones outweigh a lot of extra synthetic ones.</li>
+  <li><strong>Variety helps:</strong> different distances from the mic,
+  different tones (flat, questioning, in a hurry), a few with background
+  noise, a few with silence.</li>
+  <li><strong>One utterance per file</strong> — each recording should be just
+  the one word, trimmed roughly to its length (a second or two of extra
+  silence around it is fine, it doesn't need to be exact).</li>
+  <li><strong>Format:</strong> any common audio format works, but 16kHz mono
+  WAV is the target the rest of the pipeline uses — if you're not sure,
+  don't worry about converting by hand, just save what your recorder gives
+  you and flag it if training complains.</li>
+</ul>
+<p>Save every file into:</p>
+<pre><code>tools/wakeword/data/positive_real/</code></pre>
+
+<h2><span class="step">Step 2 —</span> record the room</h2>
+<p>Record <strong>30–60 minutes</strong> of whatever the device will actually
+sit next to — normal conversation, TV, kitchen sounds, silence, footsteps.
+This is what teaches the model what "not the wake word" sounds like in the
+real world, instead of only computer-generated noise.</p>
+<ul>
+  <li>Doesn't need to be one continuous file — several shorter recordings
+  covering different times of day/activities are fine.</li>
+  <li>The point is variety of realistic background, not perfect audio
+  quality.</li>
+</ul>
+<p>Save it into:</p>
+<pre><code>tools/wakeword/data/negative_real/</code></pre>
+
+<h2><span class="step">Step 3 —</span> turn the new data on</h2>
+<p>Open <code class="path">tools/wakeword/config/training_parameters.yaml</code>.
+Near the bottom of the <code>features:</code> list are two blocks that start
+with <code>#</code> (commented out) mentioning <code>positive_real</code> and
+<code>negative_real</code>. Remove the <code>#</code> at the start of each
+line in both blocks. That's the only file you need to edit by hand.</p>
+<div class="card">
+  <p>Before:</p>
+  <pre><code>  # - features_dir: data/features/positive_real
+  #   sampling_weight: 5.0
+  #   penalty_weight: 1.0
+  #   truth: true
+  #   truncation_strategy: truncate_start
+  #   type: mmap</code></pre>
+  <p>After (just the <code>#</code>s removed):</p>
+  <pre><code>  - features_dir: data/features/positive_real
+    sampling_weight: 5.0
+    penalty_weight: 1.0
+    truth: true
+    truncation_strategy: truncate_start
+    type: mmap</code></pre>
+</div>
+
+<h2><span class="step">Step 4 —</span> rebuild and retrain</h2>
+<p>Using the dashboard (<code>python -m tools.wakeword.ui</code>, then
+<a href="http://127.0.0.1:5151">http://127.0.0.1:5151</a>):</p>
+<ol>
+  <li>Click <strong>Build features</strong> — do not click the three
+  "Generate…" buttons above it, your real recordings are already audio,
+  they don't need synthesizing.</li>
+  <li>Wait for the log to go quiet and the button to re-enable.</li>
+  <li>Click <strong>Train</strong> (the default numbers are fine to start
+  with).</li>
+  <li>Wait — this is the slow step, expect several minutes.</li>
+</ol>
+<p>Or from a terminal, in <code>tools/wakeword/</code>:</p>
+<pre><code>docker compose run --rm train python scripts/build_features.py
+docker compose run --rm train bash scripts/train.sh</code></pre>
+
+<h2><span class="step">Step 5 —</span> check the result and export</h2>
+<p>Look at the new row in the dashboard's <strong>Run history</strong> table
+(or <code class="path">data/runs/&lt;newest&gt;/summary.json</code>):</p>
+<table>
+  <tr><th>Column</th><th>What it means</th></tr>
+  <tr><td>Ambient measured</td><td>Should say "yes" — if it says "nan", something's wrong, see <code>TRAINING_GUIDE.md</code>.</td></tr>
+  <tr><td>frr</td><td>How often it misses the real word. Lower is better.</td></tr>
+  <tr><td>faph</td><td>False alarms per hour on real background audio. Lower is better, aim for ≤2.</td></tr>
+  <tr><td>Recommended cutoff</td><td>The number to copy into the Export box next.</td></tr>
+</table>
+<p>Type that cutoff into the <strong>probability_cutoff</strong> box next to
+the <strong>Export</strong> button and click it. That copies the finished
+model into <code class="path">firmware/wakeword/models/</code> — the actual
+file the device loads.</p>
+
+<div class="card ok">
+  <p><strong>What "good" looks like here is different from the synthetic
+  runs.</strong> A synthetic-only run hitting frr=0/faph=0 was almost too
+  easy. With real voices and real room noise in the mix, don't expect a
+  perfect score on the first try — some frr and some faph is normal and
+  informative. If faph is high, add more real room recordings covering
+  whatever triggered it. If frr is high, add more real voice recordings.</p>
+</div>
+
+<h2>Checklist</h2>
+<ul class="checklist">
+  <li>Recorded 20+ people/takes saying "Trstenko" → <code class="path">data/positive_real/</code></li>
+  <li>Recorded 30-60 min of real room ambience → <code class="path">data/negative_real/</code></li>
+  <li>Uncommented both blocks in <code class="path">training_parameters.yaml</code></li>
+  <li>Ran <strong>Build features</strong></li>
+  <li>Ran <strong>Train</strong></li>
+  <li>Checked the new Run history row — ambient measured = yes</li>
+  <li>Exported at the recommended cutoff</li>
+</ul>
+
+<footer>
+  Trstenko — <code>tools/wakeword/</code>. See <code>TRAINING_GUIDE.md</code>
+  for what frr/faph/AUC actually mean and how to keep tuning past this point,
+  and <code>ui/README.md</code> for the rest of the dashboard.
+</footer>
+
+</div>
+</body>
+</html>

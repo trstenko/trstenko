@@ -1,0 +1,16 @@
+# Development only. Never installed on the robot.
+#
+# The emulator and the face preview both need Pillow and tkinter. tkinter ships
+# with python.org and Windows builds; on Debian it is python3-tk from apt.
+-r ../firmware/requirements.txt
+
+# Real microphone and speaker in the emulator, through PortAudio. Optional:
+# without it the audio backends refuse with an install line and the level
+# slider keeps working, so the rest of the emulator is unaffected.
+sounddevice>=0.4
+
+# wakeword/ui's phone-recording page needs an HTTPS dev server -- phone
+# browsers refuse microphone access over plain http:// to any address other
+# than localhost, so the dashboard serves itself over a self-signed cert
+# (Flask's `ssl_context="adhoc"`, which needs this package).
+cryptography>=42

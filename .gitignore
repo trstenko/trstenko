@@ -6,3 +6,12 @@ build/
 *.log
 .DS_Store
 Thumbs.db
+__pycache__/
+*.py[cod]
+.venv/
+
+# Signing keys. The private half never belongs in the repo; it lives in the
+# team's secret store and in the TRSTENKO_SIGNING_KEY repository secret.
+release-key.json
+*-key.json
+dist/

@@ -1,0 +1,16 @@
+{
+  "type": "micro",
+  "wake_word": "Trstenko",
+  "author": "Trstenko (Moje podjetje student company)",
+  "model": "trstenko.tflite",
+  "trained_languages": [
+    "en",
+    "sl"
+  ],
+  "version": 1,
+  "micro": {
+    "probability_cutoff": 0.99,
+    "feature_step_size": 10,
+    "sliding_window_size": 5
+  }
+}

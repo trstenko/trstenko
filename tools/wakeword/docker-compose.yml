@@ -1,0 +1,34 @@
+services:
+  generate:
+    build:
+      context: .
+      dockerfile: Dockerfile.generate
+    volumes:
+      - ${WAKEWORD_DATA_DIR:-./data}:/work/data
+      - ./scripts:/work/scripts
+    working_dir: /work
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  train:
+    build:
+      context: .
+      dockerfile: Dockerfile.train
+    volumes:
+      - ${WAKEWORD_DATA_DIR:-./data}:/work/data
+      - ./scripts:/work/scripts
+      - ./config:/work/config
+      - ../../firmware/wakeword/models:/work/export
+    working_dir: /work
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

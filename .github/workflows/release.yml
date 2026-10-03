@@ -1,0 +1,184 @@
+name: publish a release
+
+# Two ways in.
+#
+#   Tag push       git tag -a v0.4.1 -m "Faster wake word" && git push --tags
+#                  Everything is taken from the tag. A tag with a suffix --
+#                  v0.5.0-beta.1 -- is published as a prerelease, which is
+#                  what puts it on the dev channel and keeps it away from
+#                  devices on stable.
+#
+#   Run it by hand from the Actions tab, when the urgency or the summary
+#   needs saying explicitly. Marking one urgent means devices install it on
+#   their own, so it is a button somebody presses on purpose rather than
+#   something inferred from a tag message.
+#
+# Needs one secret: TRSTENKO_SIGNING_KEY, the contents of the release-key.json
+# that `python -m tools.release keygen` wrote. Without it the workflow refuses
+# rather than publishing something no device can verify.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, without the v (e.g. 0.4.1)"
+        required: true
+      urgency:
+        description: "optional = ask the user, urgent = install unattended"
+        required: true
+        default: optional
+        type: choice
+        options: [optional, recommended, urgent]
+      summary:
+        description: "One line, shown on the device's update page"
+        required: false
+      channel:
+        description: "stable, or dev for a prerelease"
+        required: true
+        default: stable
+        type: choice
+        options: [stable, dev]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -r firmware/requirements.txt
+
+      - name: Work out what is being published
+        id: release
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.ref_name }}
+          IN_VERSION: ${{ inputs.version }}
+          IN_URGENCY: ${{ inputs.urgency }}
+          IN_SUMMARY: ${{ inputs.summary }}
+          IN_CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            version="$IN_VERSION"
+            urgency="$IN_URGENCY"
+            summary="$IN_SUMMARY"
+            prerelease=$([ "$IN_CHANNEL" = "dev" ] && echo true || echo false)
+          else
+            version="${TAG#v}"
+            # An annotated tag's message becomes the summary, and an
+            # `Urgency: urgent` line in it is honoured -- the same fallback
+            # the device understands when a release has no manifest.
+            message="$(git tag -l --format='%(contents)' "$TAG")"
+            urgency="$(printf '%s\n' "$message" \
+              | grep -iE '^urgency:' | head -1 | cut -d: -f2 | tr -d ' ' || true)"
+            urgency="${urgency:-optional}"
+            summary="$(printf '%s\n' "$message" | grep -viE '^urgency:' \
+              | head -1)"
+            # v0.5.0-beta.1 is a prerelease: the dev channel.
+            case "$version" in *-*) prerelease=true ;; *) prerelease=false ;; esac
+          fi
+
+          echo "version=$version"       >> "$GITHUB_OUTPUT"
+          echo "urgency=$urgency"       >> "$GITHUB_OUTPUT"
+          echo "summary=$summary"       >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "Publishing $version ($urgency, prerelease=$prerelease)"
+
+      # The device decides what it is running by reading firmware/VERSION.
+      # If that disagrees with the tag, every device installs this release
+      # and then offers it again forever.
+      - name: firmware/VERSION matches the tag
+        run: |
+          set -euo pipefail
+          have="$(cat firmware/VERSION | tr -d '[:space:]')"
+          want="${{ steps.release.outputs.version }}"
+          if [ "$have" != "$want" ]; then
+            echo "::error::firmware/VERSION is $have, this release is $want."
+            echo "Commit the bump before tagging."
+            exit 1
+          fi
+
+      - name: The checks that gate a release
+        run: |
+          python -m tools.check_layout
+          python -m tools.emulator.headless
+
+      - name: Sign and build
+        env:
+          SIGNING_KEY: ${{ secrets.TRSTENKO_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SIGNING_KEY}" ]; then
+            echo "::error::TRSTENKO_SIGNING_KEY is not set. Generate one with"
+            echo "python -m tools.release keygen, add the private file as a"
+            echo "repository secret, and commit the public half with"
+            echo "python -m tools.release trust."
+            exit 1
+          fi
+          printf '%s' "${SIGNING_KEY}" > /tmp/signing-key.json
+          python -m tools.release build \
+            --version "${{ steps.release.outputs.version }}" \
+            --urgency "${{ steps.release.outputs.urgency }}" \
+            --summary "${{ steps.release.outputs.summary }}" \
+            --out dist --key /tmp/signing-key.json
+          rm -f /tmp/signing-key.json
+
+      - name: Refuse to publish something the devices would reject
+        run: |
+          python - <<'PY'
+          import json, sys
+          from firmware.updates import signing
+          manifest = json.load(open("dist/update.json"))
+          keys = signing.load_keys(*signing.default_key_paths())
+          if not keys:
+              print("::warning::no trusted keys are committed, so devices "
+                    "will install this without verifying the signature. Run "
+                    "python -m tools.release trust --key release-key.json")
+              sys.exit(0)
+          ok, key_id, reason = signing.check(manifest, keys)
+          if not ok:
+              print("::error::devices would refuse this release: %s" % reason)
+              sys.exit(1)
+          print("signed by %s, which devices trust" % key_id)
+          PY
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+          URGENCY: ${{ steps.release.outputs.urgency }}
+          SUMMARY: ${{ steps.release.outputs.summary }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          notes="$(printf '%s\n\nUrgency: %s\n' "${SUMMARY:-}" "$URGENCY")"
+          args=(--title "v$VERSION" --notes "$notes")
+          [ "$PRERELEASE" = "true" ] && args+=(--prerelease)
+          # Idempotent: re-running a failed publish updates the release
+          # rather than falling over on "already exists".
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release upload "v$VERSION" dist/* --clobber
+            gh release edit "v$VERSION" "${args[@]}"
+          else
+            gh release create "v$VERSION" dist/* "${args[@]}"
+          fi
+
+      - name: Say what the devices will do
+        run: |
+          echo "### v${{ steps.release.outputs.version }} published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| | |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| urgency | \`${{ steps.release.outputs.urgency }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| channel | ${{ steps.release.outputs.prerelease == 'true' && 'dev (prerelease) — only devices set to beta' || 'stable — every device' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| devices | ${{ steps.release.outputs.urgency == 'urgent' && 'download, install and restart on their own after the grace period' || 'ask before downloading anything' }} |" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,107 @@
+window_step_ms: 10
+train_dir: data/trained_models/trstenko
+
+# truth: True = positive ("Trstenko") examples, False = negative.
+# sampling_weight controls how often a category is drawn into a batch;
+# penalty_weight scales how hard a wrong prediction on it is punished.
+# Tune both once the first run's false-accept rate is known -- see
+# README.md "Honest gaps."
+features:
+  - features_dir: data/features/positive_en
+    sampling_weight: 2.0
+    penalty_weight: 1.0
+    truth: true
+    truncation_strategy: truncate_start
+    type: mmap
+  - features_dir: data/features/positive_sl
+    sampling_weight: 1.0
+    penalty_weight: 1.0
+    truth: true
+    truncation_strategy: truncate_start
+    type: mmap
+  - features_dir: data/features/negative_speech_en
+    sampling_weight: 10.0
+    penalty_weight: 1.0
+    truth: false
+    truncation_strategy: random
+    type: mmap
+  - features_dir: data/features/negative_speech_sl
+    sampling_weight: 5.0
+    penalty_weight: 1.0
+    truth: false
+    truncation_strategy: random
+    type: mmap
+  - features_dir: data/features/negative_noise
+    sampling_weight: 8.0
+    penalty_weight: 1.0
+    truth: false
+    truncation_strategy: random
+    type: mmap
+  # Real recordings. Weighted higher than the synthetic equivalents on
+  # purpose: real data is worth more per sample. See TRAINING_GUIDE.md.
+  - features_dir: data/features/positive_real
+    sampling_weight: 5.0
+    penalty_weight: 1.0
+    truth: true
+    truncation_strategy: truncate_start
+    type: mmap
+  - features_dir: data/features/negative_real
+    sampling_weight: 10.0
+    penalty_weight: 1.0
+    truth: false
+    truncation_strategy: random
+    type: mmap
+  # External real-audio sources (scripts/import_common_voice.py,
+  # scripts/import_freesound.py -- see LICENSES.md for why each is clean to
+  # use commercially). Uncomment once the matching import script has
+  # actually been run and data/features/<name> exists.
+  # negative_speech_cv_en/sl stay commented -- import_common_voice.py is
+  # blocked (Mozilla Data Collective's ToU), no data exists for them.
+  # - features_dir: data/features/negative_speech_cv_en
+  #   sampling_weight: 5.0
+  #   penalty_weight: 1.0
+  #   truth: false
+  #   truncation_strategy: random
+  #   type: mmap
+  # - features_dir: data/features/negative_speech_cv_sl
+  #   sampling_weight: 5.0
+  #   penalty_weight: 1.0
+  #   truth: false
+  #   truncation_strategy: random
+  #   type: mmap
+  # 79 real CC0 ambient clips imported 2026-09-27 -- see
+  # data/negative_ambient_freesound/SOURCES.txt. Weight lower than
+  # negative_noise's 8.0 on purpose: that category has 1500 clips, this one
+  # has 79 -- matching its weight put 19x less underlying variety in front
+  # of the model at the same draw rate, which is what training_run
+  # 20260927-171938 (frr jumped to 1.65% at a cutoff of 0.99, basically
+  # nothing tested between 0.99 and 1.00) looks like: memorizing a small
+  # set instead of generalizing from it.
+  - features_dir: data/features/negative_ambient_freesound
+    sampling_weight: 3.0
+    penalty_weight: 1.0
+    truth: false
+    truncation_strategy: random
+    type: mmap
+
+training_steps: [10000]
+positive_class_weight: [1]
+# Run 1 (2026-09-26) used 20 here: frr=0.30 at cutoff 0.5, faph unmeasured
+# (ambient eval wasn't wired up yet -- see TRAINING_GUIDE.md). Lowered for
+# run 2 now that faph is measurable, to check whether 20 was pushing recall
+# down for no faph benefit.
+negative_class_weight: [8]
+learning_rates: [0.001]
+batch_size: 128
+
+time_mask_max_size: [0]
+time_mask_count: [0]
+freq_mask_max_size: [0]
+freq_mask_count: [0]
+
+eval_step_interval: 500
+clip_duration_ms: 1500
+
+target_minimization: 0.9
+minimization_metric: null
+maximization_metric: average_viable_recall

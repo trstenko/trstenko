@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Trstenko wake word — training dashboard</title>
+<style>
+  :root {
+    --bg: #0b0f12; --surface: #151d22; --line: #243137;
+    --ink: #c8d4d8; --dim: #6b7d85; --teal: #1b7f9b;
+    --amber: #9b6c1b; --green: #2f8f5b; --red: #a84a42;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--ink); margin: 0; padding: 24px;
+    font: 13px/1.5 Consolas, "SF Mono", monospace;
+  }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  h2 { font-size: 13px; color: var(--dim); text-transform: uppercase;
+       letter-spacing: 0.06em; margin: 28px 0 10px; }
+  .sub { color: var(--dim); margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+          gap: 8px; }
+  .card { background: var(--surface); border: 1px solid var(--line);
+          border-radius: 4px; padding: 10px 12px; }
+  .card .n { font-size: 20px; }
+  .card .k { color: var(--dim); font-size: 11px; }
+  button {
+    background: var(--surface); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 4px; padding: 8px 12px; font: inherit; cursor: pointer;
+    margin: 0 8px 8px 0;
+  }
+  button:hover:not(:disabled) { border-color: var(--teal); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  input {
+    background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 4px; padding: 6px 8px; font: inherit; width: 90px;
+  }
+  label { color: var(--dim); font-size: 11px; display: block; margin-bottom: 2px; }
+  .field { display: inline-block; margin: 0 12px 8px 0; }
+  pre#log {
+    background: #000; color: #8fd; border: 1px solid var(--line); border-radius: 4px;
+    padding: 10px; height: 220px; overflow-y: auto; white-space: pre-wrap;
+    word-break: break-all;
+  }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: normal; font-size: 11px; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; }
+  .pill.ok { background: rgba(47,143,91,0.2); color: var(--green); }
+  .pill.bad { background: rgba(168,74,66,0.2); color: var(--red); }
+  .pill.warn { background: rgba(155,108,27,0.2); color: var(--amber); }
+  a { color: var(--teal); }
+  #status-line { color: var(--dim); margin-bottom: 12px; }
+  .clip-row { display: flex; align-items: center; gap: 10px; padding: 8px 0;
+              border-bottom: 1px solid var(--line); }
+  .clip-row .meta { flex: 1; min-width: 0; }
+  .clip-row .meta .cat { font-size: 12px; color: var(--dim); }
+  .clip-row audio { height: 32px; max-width: 220px; }
+  code.token { background: var(--bg); padding: 2px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<h1>Trstenko — wake word training</h1>
+<div class="sub">Dashboard for <code>tools/wakeword/</code>. Read <code>TRAINING_GUIDE.md</code> for what these numbers mean.</div>
+
+<h2>Dataset</h2>
+<div class="grid" id="datasets"></div>
+
+<h2>Record from phone</h2>
+<div class="sub" id="record-info">loading...</div>
+<div id="pending-clips"></div>
+
+<h2>Import training zip</h2>
+<div class="sub">Drop in a zip exported from the voice-collector admin
+  dashboard's "Download zip" button (<code>positive/*.wav</code> /
+  <code>negative/*.wav</code>) &mdash; unpacks straight into
+  <code>data/positive_real</code> / <code>data/negative_real</code>.</div>
+<input type="file" id="zip-input" accept=".zip">
+<button id="import-zip-btn">Import zip</button>
+<div class="sub" id="import-zip-result"></div>
+
+<h2>Pipeline</h2>
+<div id="status-line"></div>
+<div>
+  <button data-action="generate_positive">1. Generate positive samples</button>
+  <button data-action="generate_negative_speech">2. Generate negative speech</button>
+  <button data-action="generate_negative_noise">3. Generate negative noise</button>
+  <button data-action="build_features">4. Build features</button>
+</div>
+<div style="margin-top: 12px;">
+  <div class="field"><label>positive_class_weight</label><input id="pos-weight" type="number" value="1" step="0.5"></div>
+  <div class="field"><label>negative_class_weight</label><input id="neg-weight" type="number" value="8" step="1"></div>
+  <div class="field"><label>training_steps</label><input id="steps" type="number" value="10000" step="500"></div>
+  <button data-action="train" id="train-btn">5. Train</button>
+</div>
+<div style="margin-top: 12px;">
+  <div class="field"><label>probability_cutoff</label><input id="cutoff" type="number" value="0.5" step="0.05" min="0" max="1"></div>
+  <button data-action="export" id="export-btn">6. Export to firmware/</button>
+</div>
+
+<h2>Live log</h2>
+<pre id="log">(nothing running)</pre>
+
+<h2>Run history</h2>
+<table id="runs">
+  <thead><tr><th>Run</th><th>Ambient measured</th><th>Recommended cutoff</th><th>frr</th><th>faph</th></tr></thead>
+  <tbody></tbody>
+</table>
+
+<script>
+const $ = (sel) => document.querySelector(sel);
+
+async function refreshStatus() {
+  const r = await fetch('/api/status');
+  const s = await r.json();
+
+  const datasets = $('#datasets');
+  datasets.innerHTML = '';
+  for (const [name, count] of Object.entries(s.datasets)) {
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.innerHTML = `<div class="n">${count}</div><div class="k">${name}</div>`;
+    datasets.appendChild(el);
+  }
+
+  const running = s.job.running;
+  const label = running ? `running: ${s.job.action}` :
+    (s.job.action ? `last: ${s.job.action} (exit ${s.job.returncode})` : 'idle');
+  $('#status-line').textContent = label;
+
+  document.querySelectorAll('button[data-action]').forEach(b => {
+    b.disabled = running;
+  });
+
+  if (!s.images.generate || !s.images.train) {
+    $('#status-line').textContent += ' — WARNING: docker images not built yet (docker compose build)';
+  }
+}
+
+async function refreshLog() {
+  const r = await fetch('/api/log');
+  const j = await r.json();
+  const el = $('#log');
+  const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
+  el.textContent = j.text || '(nothing running)';
+  if (atBottom) el.scrollTop = el.scrollHeight;
+}
+
+async function refreshRuns() {
+  const r = await fetch('/api/runs');
+  const runs = await r.json();
+  const tbody = document.querySelector('#runs tbody');
+  tbody.innerHTML = '';
+  for (const run of runs) {
+    const tr = document.createElement('tr');
+    const pillClass = run.ambient_measured ? 'ok' : 'bad';
+    const pillText = run.ambient_measured ? 'yes' : 'nan (unmeasured)';
+    tr.innerHTML = `
+      <td>${run.timestamp}</td>
+      <td><span class="pill ${pillClass}">${pillText}</span></td>
+      <td>${run.recommended_cutoff ?? '—'}</td>
+      <td>${run.recommended_frr ?? '—'}</td>
+      <td>${run.recommended_faph ?? '—'}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+document.querySelectorAll('button[data-action]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const action = btn.dataset.action;
+    let body = {};
+    if (action === 'train') {
+      body = {
+        positive_class_weight: parseFloat($('#pos-weight').value),
+        negative_class_weight: parseFloat($('#neg-weight').value),
+        training_steps: parseInt($('#steps').value, 10),
+      };
+    } else if (action === 'export') {
+      body = { probability_cutoff: parseFloat($('#cutoff').value) };
+    }
+    const r = await fetch(`/api/actions/${action}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const j = await r.json();
+      alert(j.error || 'failed to start');
+    }
+    refreshStatus();
+  });
+});
+
+async function refreshRecordInfo() {
+  const r = await fetch('/api/record/info');
+  const j = await r.json();
+  if (j.error) { $('#record-info').textContent = j.error; return; }
+  $('#record-info').innerHTML =
+    `On your phone, same wifi: <a href="${j.lan_url}">${j.lan_url}</a> ` +
+    `&mdash; token <code class="token">${j.token}</code> ` +
+    `(self-signed cert, accept the browser warning once)`;
+}
+
+let lastPendingIds = null;
+
+async function refreshPending() {
+  const r = await fetch('/api/record/pending');
+  const clips = await r.json();
+  const el = $('#pending-clips');
+
+  // Rebuilding the list wipes out any <audio> element mid-playback (a new
+  // node with the same src still restarts from 0), so skip the rebuild
+  // entirely when the set of pending clips hasn't actually changed --
+  // this function runs on a 3s poll, which was cutting off review
+  // playback at whatever random point the next poll landed.
+  const ids = clips.map(c => c.id).join(',');
+  if (ids === lastPendingIds) return;
+  lastPendingIds = ids;
+
+  if (!clips.length) { el.innerHTML = '<div class="sub">No pending clips.</div>'; return; }
+  el.innerHTML = '';
+  for (const clip of clips) {
+    const row = document.createElement('div');
+    row.className = 'clip-row';
+    row.innerHTML = `
+      <audio controls src="/api/record/pending/${clip.id}/audio"></audio>
+      <div class="meta">
+        <div>${clip.label || '(no name)'} &mdash; ${clip.duration}s</div>
+        <div class="cat">${clip.category} &middot; ${clip.created_at}</div>
+      </div>
+      <button data-confirm="${clip.id}">Confirm</button>
+      <button data-deny="${clip.id}">Deny</button>
+    `;
+    el.appendChild(row);
+  }
+  el.querySelectorAll('button[data-confirm]').forEach(b => {
+    b.addEventListener('click', async () => {
+      await fetch(`/api/record/pending/${b.dataset.confirm}/confirm`, { method: 'POST' });
+      refreshPending(); refreshStatus();
+    });
+  });
+  el.querySelectorAll('button[data-deny]').forEach(b => {
+    b.addEventListener('click', async () => {
+      await fetch(`/api/record/pending/${b.dataset.deny}/deny`, { method: 'POST' });
+      refreshPending();
+    });
+  });
+}
+
+$('#import-zip-btn').addEventListener('click', async () => {
+  const input = $('#zip-input');
+  const resultEl = $('#import-zip-result');
+  if (!input.files.length) { resultEl.textContent = 'pick a zip file first'; return; }
+
+  const form = new FormData();
+  form.append('zip', input.files[0]);
+  resultEl.textContent = 'importing...';
+  const r = await fetch('/api/import-zip', { method: 'POST', body: form });
+  const j = await r.json();
+  if (!r.ok) { resultEl.textContent = 'error: ' + (j.error || 'failed'); return; }
+
+  const addedText = Object.entries(j.added).map(([k, v]) => `${v} ${k}`).join(', ');
+  let text = `added ${addedText}`;
+  if (j.skipped.length) text += ` — skipped ${j.skipped.length}: ${j.skipped.join(', ')}`;
+  resultEl.textContent = text;
+  input.value = '';
+  refreshStatus();
+});
+
+setInterval(refreshStatus, 2000);
+setInterval(refreshLog, 2000);
+setInterval(refreshRuns, 5000);
+setInterval(refreshPending, 3000);
+refreshStatus();
+refreshLog();
+refreshRuns();
+refreshRecordInfo();
+refreshPending();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,6 @@
+# What the robot runs. Everything here has to install on Raspberry Pi OS
+# Bookworm 64-bit, and nothing here may be a development tool -- the emulator,
+# the face preview and the After Effects importer live in tools/ and have
+# their own file.
+Pillow>=10.0
+Flask>=3.0

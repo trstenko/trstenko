@@ -1,0 +1,16 @@
+[Unit]
+Description=Trstenko — roll back an update that will not start
+Before=trstenko.service
+DefaultDependencies=no
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+# Deliberately the system python and the copy in bin/, not the release's own
+# interpreter and not a file inside releases/. This is what has to run when
+# the release is the broken thing.
+ExecStart=/usr/bin/python3 /opt/trstenko/bin/bootcheck.py /opt/trstenko
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,4 @@
+{
+ "_comment": "Public keys allowed to sign releases for this device. Add one with: python -m tools.release trust --key release-key.json. While this list is empty, releases install unsigned and every screen that mentions one says so.",
+ "keys": []
+}

@@ -46,6 +46,9 @@ import time
 
 PIN_FILE = "pairing-pin"
 PIN_DIGITS = 6
+# An owner may choose their own, up to this long. Digits only: it is typed on
+# a phone's number pad, and the lockout is what makes a short one safe.
+PIN_MAX_DIGITS = 10
 
 TOKEN_TTL = 24 * 3600
 
@@ -54,6 +57,19 @@ TOKEN_TTL = 24 * 3600
 FREE_ATTEMPTS = 3
 BASE_LOCKOUT = 5.0
 MAX_LOCKOUT = 600.0
+
+
+def weak_pin(pin):
+    """Why `pin` will not do as a pairing PIN, or None if it will. The rule is
+    short on purpose: the lockout stops guessing, so this only refuses the
+    handful that would be the first guesses."""
+    if not isinstance(pin, str) or not pin.isdigit() \
+            or not PIN_DIGITS <= len(pin) <= PIN_MAX_DIGITS:
+        return "A PIN is %d to %d digits." % (PIN_DIGITS, PIN_MAX_DIGITS)
+    steps = {(int(b) - int(a)) % 10 for a, b in zip(pin, pin[1:])}
+    if steps <= {0} or steps <= {1} or steps <= {9}:
+        return "Choose a PIN that is not one digit repeated or a run."
+    return None
 
 
 class Auth:
@@ -76,7 +92,7 @@ class Auth:
         try:
             with open(self.path, "r", encoding="utf-8") as fh:
                 found = fh.read().strip()
-            if found.isdigit() and len(found) == PIN_DIGITS:
+            if found.isdigit() and PIN_DIGITS <= len(found) <= PIN_MAX_DIGITS:
                 return found
         except OSError:
             pass
@@ -95,6 +111,25 @@ class Auth:
             self.log("pairing PIN could not be saved (%s); it will change on "
                      "the next restart" % exc)
         return pin
+
+    def set_pin(self, pin, keep=None):
+        """The owner's own PIN. Returns None, or the reason it was refused.
+        Every other session is signed out; `keep` is the token of the one
+        making the change."""
+        problem = weak_pin(pin)
+        if problem:
+            return problem
+        try:
+            os.makedirs(self.data_root, exist_ok=True)
+            with open(self.path, "w", encoding="utf-8") as fh:
+                fh.write(pin)
+            os.chmod(self.path, 0o600)
+        except OSError:
+            return "The PIN could not be saved."
+        self.pin = pin
+        self._tokens = {t: exp for t, exp in self._tokens.items() if t == keep}
+        self.log("the pairing PIN was changed from the page")
+        return None
 
     def reset_pin(self):
         """Forget the PIN and make a new one. What the setup gesture does, so
@@ -138,6 +173,23 @@ class Auth:
         self._tokens[token] = self.clock() + TOKEN_TTL
         self.log("a device paired with the update page")
         return token, 0.0
+
+    def confirm(self, pin):
+        """Ask for the PIN again before something that cannot be undone. The
+        same lockout as pairing, but no new token and no 'paired' line.
+        Returns (ok, seconds_to_wait)."""
+        wait = self.locked_for
+        if wait > 0:
+            return False, wait
+        if not hmac.compare_digest(str(pin or ""), self.pin):
+            self._failures += 1
+            if self._failures > FREE_ATTEMPTS:
+                over = self._failures - FREE_ATTEMPTS
+                self._locked_until = self.clock() + min(
+                    MAX_LOCKOUT, BASE_LOCKOUT * (2 ** (over - 1)))
+            return False, self.locked_for
+        self._failures = 0
+        return True, 0.0
 
     def check(self, token):
         if not token:

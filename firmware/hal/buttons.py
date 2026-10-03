@@ -5,8 +5,8 @@ here so the Pi and the emulator agree on what a long press is, and so the rules
 can be changed in one place.
 
     power       short -> clean shutdown, long -> restart
-    vol_down    short -> volume step down
-    vol_up      short -> volume step up
+    vol_down    short -> volume step down, long -> show the address and PIN
+    vol_up      short -> volume step up,   long -> show the address and PIN
     vol_down + vol_up held together 3s -> raise the setup hotspot, show the QR
 
 The combo is why a short press cannot fire on the way down. Stepping the volume

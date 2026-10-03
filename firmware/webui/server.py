@@ -23,7 +23,9 @@ from .headers import MAX_BODY, SECURITY_HEADERS
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css",
-         ".js": "text/javascript", ".png": "image/png", ".svg": "image/svg+xml"}
+         ".js": "text/javascript", ".png": "image/png", ".svg": "image/svg+xml",
+         ".json": "application/json", ".woff2": "font/woff2",
+         ".ico": "image/x-icon"}
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -34,11 +36,37 @@ class _Handler(BaseHTTPRequestHandler):
         pass  # the device's journal is not a web access log
 
     def do_GET(self):
+        if self._captive():
+            return
         path, _, query = self.path.partition("?")
         if path.startswith("/api/"):
+            opened = self.api.stream(path, self._token())
+            if opened is not None:
+                self._stream(*opened)
+                return
             self._api("GET", path, {}, dict(parse_qsl(query)))
             return
         self._static(path)
+
+    def do_HEAD(self):
+        # Only the captive check uses HEAD; the page itself never does.
+        if not self._captive():
+            self._send(405, b"", "text/plain")
+
+    def _captive(self):
+        """Send a phone's "am I online" check to the setup page. True if the
+        request has been answered."""
+        target = self.api.captive(self.headers.get("Host"))
+        if target is None:
+            return False
+        self.send_response(302)
+        self.send_header("Location", target)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        for name, value in SECURITY_HEADERS.items():
+            self.send_header(name, value)
+        self.end_headers()
+        return True
 
     def _token(self):
         """`Authorization: Bearer <token>`, as the page sends it."""
@@ -52,6 +80,29 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         self._with_body("PATCH")
+
+    def do_DELETE(self):
+        self._with_body("DELETE")
+
+    def _stream(self, status, body):
+        if status != 200:
+            self._send(status, json.dumps(body).encode("utf-8"),
+                       "application/json")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        for name, value in SECURITY_HEADERS.items():
+            self.send_header(name, value)
+        self.end_headers()
+        try:
+            for frame in body:
+                self.wfile.write(frame)
+                self.wfile.flush()
+        except (OSError, ValueError):
+            pass          # the page went away
+        finally:
+            body.close()
 
     def _with_body(self, method):
         path, _, query = self.path.partition("?")
@@ -84,20 +135,37 @@ class _Handler(BaseHTTPRequestHandler):
         if not target.startswith(STATIC) or not os.path.isfile(target):
             self._send(404, b"not found", "text/plain")
             return
-        with open(target, "rb") as fh:
-            data = fh.read()
         ext = os.path.splitext(target)[1]
-        self._send(200, data, TYPES.get(ext, "application/octet-stream"))
+        # A release carries a gzipped copy of each text file beside it
+        # (tools/emulator/bundle.py). A checkout has none, and serves as is.
+        packed = accepts_gzip(self.headers.get("Accept-Encoding")) \
+            and os.path.isfile(target + ".gz")
+        with open(target + ".gz" if packed else target, "rb") as fh:
+            data = fh.read()
+        self._send(200, data, TYPES.get(ext, "application/octet-stream"),
+                   gzipped=packed)
 
-    def _send(self, status, body, content_type):
+    def _send(self, status, body, content_type, gzipped=False):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        if gzipped:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         for name, value in SECURITY_HEADERS.items():
             self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
+
+
+def accepts_gzip(header):
+    """Does this `Accept-Encoding` header take gzip?"""
+    for part in (header or "").lower().split(","):
+        name, _, params = part.strip().partition(";")
+        if name.strip() in ("gzip", "*"):
+            return params.replace(" ", "") not in ("q=0", "q=0.0")
+    return False
 
 
 def serve(api, host="0.0.0.0", port=8080, background=True):

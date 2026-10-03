@@ -30,7 +30,7 @@ from tkinter import ttk
 
 from PIL import Image, ImageDraw, ImageTk
 
-from firmware import logs
+from firmware import logs, netsetup, product
 from firmware.device import Device
 from firmware.hal.base import POWER, VOL_DOWN, VOL_UP
 from firmware.scheduler.wiring import wire
@@ -44,6 +44,7 @@ from firmware.webui import Auth, UpdateApi, serve
 from . import audio as audio_mod
 from .fake_releases import FakeReleases
 from .hal import MB, EmulatedHAL
+from .network import FakeNetwork
 from .pipeline import ScriptedPipeline
 
 SCALE = 2
@@ -126,6 +127,8 @@ class Emulator(tk.Tk):
         self.title("Trstenko — emulator")
         self.configure(bg=BG)
 
+        self.args = args
+        self.assistant = None
         self.hal = EmulatedHAL()
         self.hal.system.free_mb = args.free_mb
         self.wav_path = args.wav
@@ -624,13 +627,50 @@ class Emulator(tk.Tk):
         running is reported as interrupted, as it would be on the board."""
         device = Device(
             self.hal, self.pipeline, self.updater, on_log=self.log,
-            on_setup=self._setup, db=self.db,
+            db=self.db,
             settings=settings_mod.Settings.load(
                 settings_mod.default_path(self.data_root)),
             secrets=secrets_mod.Secrets.load(
                 secrets_mod.default_path(self.data_root)))
         wire(device, synced=lambda: True)
+        self._wire_assistant(device)
+        # Setup mode against a Wi-Fi that is not real: holding both volume
+        # buttons raises the "hotspot" and puts the card on the panel. The
+        # page's Wi-Fi step then works, and nothing touches this PC's network.
+        self.network = getattr(self, "network", None) or FakeNetwork()
+        netsetup.wire(device, self.network,
+                      serial=product.serial(self.data_root),
+                      pin=lambda: self.auth.pin,
+                      new_pin=lambda: self.log(
+                          "pairing PIN for the page: %s"
+                          % self.auth.reset_pin()))
         return device
+
+    def _wire_assistant(self, device):
+        """The real voice loop, if there is a key to run it with and nobody
+        asked for the scripted one. The window's microphone and speaker are
+        what it hears and speaks through, exactly as the robot's are."""
+        from firmware.storage.settings import PROVIDERS
+
+        if self.assistant is not None:
+            self.assistant.close()
+            self.assistant = None
+        self.audio.threaded = False
+        keyed = device.secrets is not None and any(
+            device.secrets.has_key(p) for p in PROVIDERS if p != "ollama")
+        if self.args.scripted or not keyed:
+            if not self.args.scripted:
+                self.log("no API key in %s: using the scripted conversation"
+                         % os.path.join(self.data_root, "secrets.json"))
+            return
+        from firmware.assistant.wiring import wire_assistant
+
+        self.assistant = wire_assistant(device, self.hal, self.data_root)
+        self.pipeline = self.assistant.pipeline
+        self.audio.threaded = self.assistant.audio.state != "off"
+        self.log("the real assistant is on: %s" % (
+            "ready" if self.assistant.status()["ready"] else
+            ", ".join(a["kind"] for a in self.assistant.status()["alerts"])))
 
     def _bring_up(self):
         """Start the firmware again against the same install root."""
@@ -704,7 +744,9 @@ class Emulator(tk.Tk):
     def _apply_fail(self):
         from firmware.pipeline import THINKING
 
-        self.pipeline.fail_next = THINKING if self.fail_turn.get() else None
+        if hasattr(self.pipeline, "fail_next"):
+            self.pipeline.fail_next = (THINKING if self.fail_turn.get()
+                                       else None)
 
     def _apply_release(self):
         self.releases.urgency = self.urgency.get()
@@ -717,10 +759,6 @@ class Emulator(tk.Tk):
         self.releases.fail_download = self.drop.get()
         self.releases.broken_release = self.broken_release.get()
         self.releases.break_signature = self.tamper.get()
-
-    def _setup(self):
-        self.log("setup mode: the device would raise its hotspot and show a "
-                 "QR code (not built yet)")
 
     def _update_event(self, kind, payload):
         self.log("update: %s %s" % (kind, _brief(payload)))
@@ -899,6 +937,8 @@ class Emulator(tk.Tk):
 
     def quit_all(self):
         self.audio.close()
+        if self.assistant is not None:
+            self.assistant.close()
         self.device.close()
         self.db.close()
         self.server.shutdown()
@@ -965,6 +1005,11 @@ def parse_args(argv=None):
     ap.add_argument("--check-hours", type=float, default=6.0)
     ap.add_argument("--free-mb", type=int, default=2048)
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--scripted", action="store_true",
+                    help="use the scripted conversation even if there is an "
+                         "API key (the default with a key is the real "
+                         "assistant: wake word, speech to text, the model, "
+                         "Piper)")
     ap.add_argument("--wav", default=None,
                     help="a 16-bit wav to feed in as the microphone; with "
                          "no path the file input synthesises an utterance")

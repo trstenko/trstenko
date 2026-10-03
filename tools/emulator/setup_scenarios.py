@@ -1,0 +1,666 @@
+"""Scenarios for setup mode: the hotspot, the card on the screen, joining Wi-Fi.
+
+The device is the real one and so is its setup worker thread; only the Wi-Fi is
+fake (`network.FakeNetwork`). The worker really runs on its own thread, so a
+scenario waits for it with `settle`, which keeps ticking the device.
+"""
+
+import json
+import os
+import time
+
+from firmware import netsetup
+from firmware.face import setupcard
+from firmware.hal.base import VOL_DOWN, VOL_UP
+from firmware.webui import Auth, UpdateApi
+
+from .network import FakeNetwork
+
+SERIAL = "TRS-1-ABCD1234"
+
+
+class SetupRig:
+    def __init__(self, root, name, saved=True):
+        from .headless import Rig
+
+        self.rig = Rig(os.path.join(root, name))
+        self.device = self.rig.device
+        self.net = FakeNetwork(saved=saved)
+        self.auth = Auth(os.path.join(root, name), clock=lambda: self.rig.t)
+        self.setup = netsetup.wire(
+            self.device, self.net, serial=SERIAL, pin=lambda: self.auth.pin,
+            new_pin=self.auth.reset_pin)
+        self.api = UpdateApi(self.rig.updater, self.device, self.auth,
+                             commander=self._pump)
+        self.token = self.api.dispatch(
+            "POST", "/api/auth", {"pin": self.auth.pin})[1]["token"]
+
+    def _pump(self, cmd):
+        self.device.events.post(cmd)
+        self.rig.step(0.05)
+
+    def call(self, method, path, body=None):
+        return self.api.dispatch(method, path, body, self.token)
+
+    def settle(self, condition, seconds=3.0):
+        """Tick until `condition()` holds; the worker needs real time."""
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            self.rig.step(0.05)
+            if condition():
+                return True
+            time.sleep(0.005)
+        return False
+
+    def hold_both(self):
+        hal = self.rig.hal
+        hal.press(VOL_DOWN)
+        hal.press(VOL_UP)
+        self.rig.step(3.5)
+        hal.release(VOL_DOWN)
+        hal.release(VOL_UP)
+        self.rig.step(0.2)
+
+    def close(self):
+        self.setup.close()
+
+
+def _has(image, colour):
+    return any(pixel == colour for pixel in image.getdata())
+
+
+def scenario_setup_mode(report, root):
+    """The two-button gesture: a new PIN, a scan, a hotspot with a random
+    password, the card, a join that fails and one that works."""
+    r = SetupRig(root, "setupmode")
+    try:
+        setup, net = r.setup, r.net
+        r.rig.step(4.0)
+        r.settle(lambda: ("saved",) in net.calls)
+        r.rig.step(0.2)
+        report.check("a device that knows a Wi-Fi boots to the face, not setup",
+                     setup.state == netsetup.OFF and net.hotspot is None
+                     and r.device.face.current == "face_idle")
+        status, out = r.call("POST", "/api/v1/setup/join",
+                             {"ssid": "Home", "password": "password1"})
+        report.check("joining outside setup is a 409", status == 409, str(out))
+
+        old_pin = r.auth.pin
+        r.hold_both()
+        ok = r.settle(lambda: setup.state == netsetup.WAITING)
+        report.check("holding both volume buttons starts setup", ok,
+                     setup.state)
+        report.check("the scan comes before the hotspot",
+                     net.calls[-2:] == [("scan",), ("hotspot", "Trstenko-1234")],
+                     str(net.calls))
+        password = net.hotspot[1]
+        report.check("the hotspot is named after the serial and has a random "
+                     "ten-character password",
+                     net.hotspot[0] == "Trstenko-1234" and len(password) == 10
+                     and password.isalnum())
+        report.check("the gesture makes a new pairing PIN, and the old token "
+                     "stops working",
+                     r.auth.pin != old_pin
+                     and r.call("GET", "/api/v1/setup")[0] == 401)
+        r.token = r.api.dispatch("POST", "/api/auth",
+                                 {"pin": r.auth.pin})[1]["token"]
+
+        card = setup.card()
+        report.check("the card carries the Wi-Fi code, the address and the PIN",
+                     card["mode"] == "setup"
+                     and card["qr"] == "WIFI:T:WPA;S:Trstenko-1234;P:%s;;"
+                     % password and card["url"] == "http://10.42.0.1"
+                     and card["pin"] == r.auth.pin)
+        pushes = r.rig.hal.panel.pushes
+        r.rig.step(1.0)
+        frame = r.rig.hal.panel.frame
+        report.check("the screen shows the card, sent once and not every frame",
+                     _has(frame, setupcard.TEAL)
+                     and r.rig.hal.panel.pushes - pushes <= 1,
+                     "%d pushes" % (r.rig.hal.panel.pushes - pushes))
+
+        status, out = r.call("GET", "/api/v1/setup")
+        text = json.dumps(out) + json.dumps(r.call("GET", "/api/v1/state")[1])
+        report.check("the page sees the state and the networks, strongest "
+                     "first", status == 200 and out["state"] == "waiting"
+                     and [n["ssid"] for n in out["networks"]]
+                     == ["Home", "Sosedov WiFi", "Cafe: guests"]
+                     and out["hotspot"] == "Trstenko-1234", str(out)[:200])
+        report.check("the hotspot password and the PIN are in no answer and "
+                     "no log line",
+                     password not in text and r.auth.pin not in text
+                     and not any(password in line for line in r.rig.logs))
+
+        for body, why in (({"ssid": "", "password": "password1"}, "no name"),
+                          ({"ssid": "Home", "password": "short"},
+                           "a password too short to be one"),
+                          ({"ssid": "x" * 40, "password": "password1"},
+                           "a name too long to be one")):
+            status, out = r.call("POST", "/api/v1/setup/join", body)
+            report.check("a join with %s is a 400" % why,
+                         status == 400 and out["error"], str(out))
+
+        net.fail_join = True
+        status, out = r.call("POST", "/api/v1/setup/join",
+                             {"ssid": "Home", "password": "wrong-password"})
+        report.check("a join is accepted at once and done in the background",
+                     status == 200 and out["state"] == "joining")
+        ok = r.settle(lambda: setup.state == netsetup.WAITING)
+        report.check("a join that fails brings the same hotspot back, with "
+                     "the reason for the page",
+                     ok and net.hotspot == ("Trstenko-1234", password)
+                     and "Couldn't join Home" in setup.status()["error"],
+                     "%s %s" % (setup.state, setup.error))
+        report.check("the Wi-Fi password is in no log line",
+                     not any("wrong-password" in line for line in r.rig.logs))
+
+        before = len(net.calls)
+        status, out = r.call("POST", "/api/v1/setup/scan")
+        ok = r.settle(lambda: not setup.status()["scanning"])
+        report.check("scan again drops the hotspot, scans, and raises it",
+                     status == 200 and ok and net.calls[before:]
+                     == [("hotspot_down",), ("scan",),
+                         ("hotspot", "Trstenko-1234")], str(net.calls[before:]))
+
+        net.fail_join = False
+        status, out = r.call("POST", "/api/v1/setup/join",
+                             {"ssid": "Home", "password": "right-password"})
+        ok = r.settle(lambda: setup.state == netsetup.JOINED)
+        card = setup.card()
+        report.check("a join that works takes the hotspot down and shows "
+                     "where the device now is",
+                     ok and net.hotspot is None and net.joined == "Home"
+                     and card["mode"] == "online"
+                     and card["address"] == "192.168.1.57"
+                     and card["url"] == "http://trstenko.local", str(card))
+        r.rig.step(netsetup.JOINED_HOLD + 2.0)
+        pushes = r.rig.hal.panel.pushes
+        r.rig.step(1.0)
+        report.check("two minutes later the face is back",
+                     setup.state == netsetup.OFF and setup.card() is None
+                     and r.rig.hal.panel.pushes > pushes
+                     and not _has(r.rig.hal.panel.frame, setupcard.PAPER))
+
+        r.hold_both()
+        r.settle(lambda: setup.state == netsetup.WAITING)
+        report.check("the next setup has a different hotspot password",
+                     net.hotspot is not None and net.hotspot[1] != password)
+    finally:
+        r.close()
+
+
+def scenario_setup_new_device(report, root):
+    """A device with no Wi-Fi saved starts setup by itself, stays healthy
+    behind the card, and gives up after fifteen minutes."""
+    r = SetupRig(root, "setupnew", saved=False)
+    try:
+        setup, net = r.setup, r.net
+        ok = r.settle(lambda: setup.state == netsetup.WAITING)
+        report.check("with no Wi-Fi saved, setup starts at boot", ok,
+                     setup.state)
+        r.rig.step(6.0)
+        report.check("the device behind the card still counts as working, so "
+                     "a first release is not rolled back for it",
+                     r.device.healthy() and setup.card() is not None)
+        state = r.call("GET", "/api/v1/state")[1]
+        report.check("Home is told setup is on",
+                     state["device"]["setup"]["state"] == "waiting")
+        r.rig.step(netsetup.SETUP_TIMEOUT)
+        ok = r.settle(lambda: net.hotspot is None)
+        report.check("after fifteen minutes with nobody, the hotspot goes "
+                     "down and the face returns",
+                     ok and setup.state == netsetup.OFF, setup.state)
+
+        # A fault in the network layer must not leave the card up for ever.
+        net.start_hotspot = lambda ssid, password: 1 / 0
+        setup.begin()
+        ok = r.settle(lambda: setup.state == netsetup.OFF)
+        report.check("a fault while starting ends setup instead of hanging it",
+                     ok and r.device.supervisor.status()["network"]["state"]
+                     == "running", setup.state)
+    finally:
+        r.close()
+
+
+def scenario_setup_parts(report, root):
+    """The pieces with no device in them: nmcli's output, the QR text, the
+    card."""
+    listed = netsetup.parse_scan(
+        "Home:82:WPA2\nHome:40:WPA2\n:55:WPA2\nCafe\\: guests:31:\n"
+        "Open:12:--\nbroken line\n")
+    report.check("a scan list keeps the strongest of each name, drops hidden "
+                 "ones, and reads an escaped colon",
+                 listed == [{"ssid": "Home", "signal": 82, "secure": True},
+                            {"ssid": "Cafe: guests", "signal": 31,
+                             "secure": False},
+                            {"ssid": "Open", "signal": 12, "secure": False}],
+                 str(listed))
+    report.check("the Wi-Fi code escapes what would break it",
+                 netsetup.wifi_qr('a;b', 'p:"q') ==
+                 'WIFI:T:WPA;S:a\\;b;P:p\\:\\"q;;')
+    seen = {netsetup.new_password() for _ in range(50)}
+    report.check("hotspot passwords are random and easy to type",
+                 len(seen) == 50 and all(
+                     len(p) == 10 and not set(p) & set("0O1lI") for p in seen))
+
+    card = {"mode": "setup", "ssid": "Trstenko-1234", "password": "abcdefgh23",
+            "url": "http://10.42.0.1", "pin": "123456", "qr": "WIFI:x"}
+    grid = [[(x + y) % 2 == 0 for x in range(25)] for y in range(25)]
+    with_code = setupcard.draw(card, matrix=lambda text: grid)
+    plain = setupcard.draw(card, matrix=lambda text: None)
+    report.check("the card is the size of the panel, with the code on it",
+                 with_code.size == (320, 240)
+                 and _has(with_code, setupcard.PAPER)
+                 and with_code.getpixel((160, 20)) != setupcard.DARK)
+    report.check("without the qrcode package it shows the hotspot as text "
+                 "rather than nothing",
+                 plain.size == (320, 240) and plain.tobytes()
+                 != with_code.tobytes() and _has(plain, setupcard.TEAL))
+    for mode in ("starting", "joining", "online"):
+        image = setupcard.draw({"mode": mode, "ssid": "Home", "lang": "sl",
+                                "url": "http://trstenko.local",
+                                "address": "192.168.1.57", "pin": "123456"})
+        report.check("the %s card draws" % mode, image.size == (320, 240)
+                     and image.getbbox() is not None)
+    same = setupcard.cached(dict(card))
+    report.check("an unchanged card is not drawn again",
+                 setupcard.cached(dict(card)) is same
+                 and setupcard.cached(None) is None)
+
+
+def scenario_factory_reset(report, root):
+    """Factory reset: asks for the PIN, wipes on the way out, restarts, and
+    the device that comes back is a new one in setup mode."""
+    from firmware.storage import DB_NAME, factory
+    from firmware.storage import settings as settings_mod
+    from firmware.storage.secrets import Secrets, default_path
+
+    from .headless import SchedRig
+
+    key = "sk-test-factory-reset-key-000111222333"
+    rig = SchedRig(root, "factory")
+    data = rig.data
+    device = rig.device
+    secrets = Secrets.load(default_path(data))
+    secrets.set_key("openai", key)
+    device.secrets = secrets
+    net = FakeNetwork(saved=True)
+    auth = Auth(data, clock=rig.clock.wall)
+    netsetup.wire(device, net, serial=SERIAL, pin=lambda: auth.pin,
+                  new_pin=auth.reset_pin, check=False)
+    factory.wire(device, data, new_pin=auth.reset_pin, network=net)
+
+    def pump(cmd):
+        device.events.post(cmd)
+        rig.tick()
+    api = UpdateApi(None, device, auth, commander=pump)
+    token = api.dispatch("POST", "/api/auth", {"pin": auth.pin})[1]["token"]
+
+    def call(path, body=None, method="POST"):
+        return api.dispatch(method, path, body, token)
+
+    call("/api/v1/reminders", {"text": "tea", "in_seconds": 600})
+    call("/api/v1/settings", {"owner": {"name": "Maj"}}, "PATCH")
+    rig.settings.data["updates"]["channel"] = "beta"
+    rig.settings.save()
+    rig.db.conn().execute(
+        "INSERT INTO memories (text, created_at, source) VALUES "
+        "('likes tea', 1, 'web')")
+    os.makedirs(os.path.join(data, "backups"), exist_ok=True)
+    open(os.path.join(data, "backups", "trstenko-v1.db"), "wb").close()
+    db_path = os.path.join(data, DB_NAME)
+    old_pin = auth.pin
+
+    status, out = call("/api/v1/factory-reset", {})
+    report.check("a factory reset without the PIN is refused",
+                 status == 403 and out.get("needs_pin"), str(out))
+    status, out = call("/api/v1/factory-reset", {"pin": "000000"
+                                                 if old_pin != "000000"
+                                                 else "111111"})
+    report.check("and with the wrong PIN", status == 403 and device.running)
+    status, out = call("/api/v1/factory-reset", None, "GET")
+    report.check("and it only answers a POST", status == 405)
+    report.check("nothing has been touched by the refusals",
+                 os.path.exists(db_path) and secrets.has_key("openai")
+                 and rig.hal.system.rebooted == 0)
+
+    status, out = call("/api/v1/factory-reset", {"pin": old_pin})
+    report.check("with the PIN it is accepted, and the loop is told to stop",
+                 status == 200 and out["restarting"] and not device.running,
+                 str(out))
+    report.check("the wiping waits for the shutdown: the files are still "
+                 "there while workers could be writing them",
+                 os.path.exists(db_path))
+    device.close()
+
+    left = sorted(os.listdir(data))
+    with open(settings_mod.default_path(data), encoding="utf-8") as fh:
+        saved = json.load(fh)
+    report.check("the database, its WAL and its backups are gone",
+                 not any(n.startswith(DB_NAME) for n in left)
+                 and "backups" not in left, str(left))
+    report.check("every key is gone, from the file and from memory",
+                 not os.path.exists(default_path(data))
+                 and not secrets.has_key("openai"))
+    report.check("the settings are the defaults again, but the update "
+                 "channel is kept",
+                 saved["owner"]["name"] == ""
+                 and saved["updates"]["channel"] == "beta", str(saved)[:120])
+    report.check("there is a new PIN and the old token is dead",
+                 auth.pin != old_pin and not auth.check(token))
+    report.check("the Wi-Fi is forgotten and the device restarts",
+                 ("forget",) in net.calls and not net.is_saved
+                 and rig.hal.system.rebooted == 1, str(net.calls))
+    text = "\n".join(rig.logs)
+    report.check("the key is in no log line", key not in text)
+    if rig in SchedRig.open_rigs:
+        SchedRig.open_rigs.remove(rig)
+
+    # What comes back up: a new device, with nothing in it, asking for Wi-Fi.
+    again = SchedRig(root, "factory")
+    try:
+        setup = netsetup.wire(again.device, net, serial=SERIAL,
+                              pin=lambda: auth.pin, new_pin=auth.reset_pin)
+        end = time.monotonic() + 3.0
+        while time.monotonic() < end and setup.state != netsetup.WAITING:
+            again.tick()
+            time.sleep(0.005)
+        memories = again.db.conn().execute(
+            "SELECT COUNT(*) FROM memories").fetchone()[0]
+        report.check("after the restart it is an empty device in setup mode, "
+                     "showing the new PIN",
+                     setup.state == netsetup.WAITING and memories == 0
+                     and again.scheduler.list() == []
+                     and setup.card()["pin"] == auth.pin, setup.state)
+        setup.close()
+    finally:
+        again.close()
+
+    # An ordinary shutdown wipes nothing.
+    plain = SchedRig(root, "factoryplain")
+    factory.wire(plain.device, plain.data, network=FakeNetwork())
+    plain.device.close()
+    report.check("a device that was not reset keeps everything on shutdown",
+                 os.path.exists(os.path.join(plain.data, DB_NAME))
+                 and plain.hal.system.rebooted == 0)
+    plain.close()
+
+
+def scenario_info_card(report, root):
+    """A long press of a volume button shows the address and the PIN."""
+    r = SetupRig(root, "infocard")
+    try:
+        setup, net, hal = r.setup, r.net, r.rig.hal
+        r.rig.step(4.0)
+        net.joined = "Home"
+        volume = hal.speaker.get_volume()
+
+        def long_press(name):
+            hal.press(name)
+            r.rig.step(1.0)
+            hal.release(name)
+            r.rig.step(0.1)
+
+        long_press(VOL_UP)
+        ok = r.settle(lambda: setup.card() is not None)
+        card = setup.card() or {}
+        report.check("a long press of a volume button shows the address and "
+                     "the PIN", ok and card.get("mode") == "info"
+                     and card["address"] == "192.168.1.57"
+                     and card["pin"] == r.auth.pin
+                     and card["url"] == "http://trstenko.local", str(card))
+        report.check("it does not change the volume, start setup or make a "
+                     "new PIN", abs(hal.speaker.get_volume() - volume) < 1e-9
+                     and setup.state == netsetup.OFF and net.hotspot is None
+                     and r.call("GET", "/api/v1/setup")[0] == 200)
+        r.rig.step(1.0)
+        report.check("the card is on the screen",
+                     _has(hal.panel.frame, setupcard.PAPER))
+        report.check("the PIN is in no log line",
+                     not any(r.auth.pin in line for line in r.rig.logs))
+        r.rig.step(netsetup.INFO_HOLD + 1.0)
+        report.check("half a minute later the face is back",
+                     setup.card() is None)
+
+        net.joined = None
+        long_press(VOL_DOWN)
+        r.settle(lambda: setup.card() is not None)
+        card = setup.card() or {}
+        image = setupcard.draw(dict(card))
+        report.check("off the Wi-Fi it still shows the PIN, and says so",
+                     card.get("mode") == "info" and card["address"] is None
+                     and image.size == (320, 240), str(card))
+    finally:
+        r.close()
+
+
+def scenario_captive_portal(report, root):
+    """During setup, a phone's "am I online" check is sent to the page."""
+    import http.client
+
+    from firmware.webui import captive, serve
+
+    cases = (
+        ("connectivitycheck.gstatic.com", "waiting", captive.PORTAL),
+        ("captive.apple.com:80", "starting", captive.PORTAL),
+        ("www.msftconnecttest.com", "joining", captive.PORTAL),
+        ("10.42.0.1", "waiting", None),
+        ("TRSTENKO.local:80", "waiting", None),
+        ("", "waiting", None),
+        ("connectivitycheck.gstatic.com", "off", None),
+        ("example.com", "joined", None),
+    )
+    wrong = [(h, s) for h, s, want in cases if captive.redirect(h, s) != want]
+    report.check("only another site's address, and only while the hotspot is "
+                 "up, is redirected", not wrong, str(wrong))
+
+    r = SetupRig(root, "captive", saved=False)
+    from .headless import Pump
+    server = serve(r.api, host="127.0.0.1", port=0)
+    port = server.server_address[1]
+
+    def get(host, path="/generate_204", method="GET"):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.putrequest(method, path, skip_host=True)
+        conn.putheader("Host", host)
+        conn.endheaders()
+        response = conn.getresponse()
+        body = response.read()
+        got = (response.status, response.getheader("Location"), body,
+               response.getheader("Content-Security-Policy"))
+        conn.close()
+        return got
+
+    try:
+        r.settle(lambda: r.setup.state == netsetup.WAITING)
+        with Pump(r.device):
+            status, where, _, policy = get("connectivitycheck.gstatic.com")
+            report.check("on the hotspot, a phone's check gets a redirect to "
+                         "the setup page, with the security headers",
+                         status == 302 and where == "http://10.42.0.1/"
+                         and policy, "%s %s" % (status, where))
+            status, where, _, _ = get("captive.apple.com",
+                                      "/hotspot-detect.html", "HEAD")
+            report.check("a HEAD check too", status == 302
+                         and where == "http://10.42.0.1/")
+            status, _, body, _ = get("10.42.0.1", "/")
+            report.check("the page itself is served, not redirected",
+                         status == 200 and b"app.js" in body)
+            status, _, _, _ = get("10.42.0.1", "/api/v1/setup")
+            report.check("and its API still needs the token", status == 401)
+            r.setup.stop()
+            r.rig.step(0.2)
+            status, where, _, _ = get("connectivitycheck.gstatic.com")
+            report.check("once setup is over, nothing is redirected",
+                         status == 404 and where is None,
+                         "%s %s" % (status, where))
+    finally:
+        server.shutdown()
+        server.server_close()
+        r.close()
+
+
+def scenario_pin_options(report, root):
+    """The owner's own PIN, and keeping the PIN off the screen."""
+    from firmware.storage import settings as settings_mod
+    from firmware.webui.auth import weak_pin
+
+    refused = [p for p in ("123456", "000000", "987654", "90123456", "12345",
+                           "48291a", "12345678901", None)
+               if weak_pin(p) is None]
+    report.check("a PIN that is too short, not digits, one digit repeated or "
+                 "a run is refused", not refused
+                 and weak_pin("482915") is None
+                 and weak_pin("4829154829") is None, str(refused))
+
+    r = SetupRig(root, "pinoptions")
+    try:
+        settings = settings_mod.Settings.load(
+            settings_mod.default_path(os.path.join(root, "pinoptions")))
+        r.device.settings = settings
+        r.rig.step(4.0)
+        r.net.joined = "Home"
+        old = r.auth.pin
+        other = r.api.dispatch("POST", "/api/auth", {"pin": old})[1]["token"]
+
+        status, out = r.call("POST", "/api/v1/pin",
+                             {"pin": "999999" if old != "999999" else "888888",
+                              "new_pin": "482915"})
+        report.check("changing the PIN needs the current one",
+                     status == 403 and r.auth.pin == old, str(out))
+        status, out = r.call("POST", "/api/v1/pin",
+                             {"pin": old, "new_pin": "111111"})
+        report.check("a weak new PIN is refused with the reason",
+                     status == 400 and "PIN" in out["error"]
+                     and r.auth.pin == old, str(out))
+        status, out = r.call("POST", "/api/v1/pin",
+                             {"pin": old, "new_pin": "48291537"})
+        report.check("the owner's own PIN is accepted, and is not sent back",
+                     status == 200 and out == {"ok": True}
+                     and r.auth.pin == "48291537")
+        report.check("this session stays paired and every other one is "
+                     "signed out",
+                     r.call("GET", "/api/v1/setup")[0] == 200
+                     and not r.auth.check(other))
+        report.check("the old PIN no longer pairs and the new one does",
+                     r.api.dispatch("POST", "/api/auth", {"pin": old})[0] == 401
+                     and r.api.dispatch("POST", "/api/auth",
+                                        {"pin": "48291537"})[0] == 200)
+        again = Auth(os.path.join(root, "pinoptions"), clock=lambda: r.rig.t)
+        report.check("it survives a restart", again.pin == "48291537")
+        report.check("the PIN is in no log line",
+                     not any("48291537" in line for line in r.rig.logs))
+
+        def long_press():
+            r.rig.hal.press(VOL_UP)
+            r.rig.step(1.0)
+            r.rig.hal.release(VOL_UP)
+            r.settle(lambda: r.setup.card() is not None)
+            return r.setup.card() or {}
+
+        report.check("by default a long press shows it",
+                     long_press().get("pin") == "48291537")
+        r.rig.step(netsetup.INFO_HOLD + 1.0)
+        status, out = r.call("PATCH", "/api/v1/settings",
+                             {"security": {"show_pin": False}})
+        card = long_press()
+        image = setupcard.draw(dict(card))
+        report.check("with showing turned off, the card has the address and "
+                     "no PIN", status == 200 and card.get("mode") == "info"
+                     and card["pin"] is None and card["address"]
+                     and image.size == (320, 240), str(card))
+        r.rig.step(netsetup.INFO_HOLD + 1.0)
+
+        r.hold_both()
+        r.settle(lambda: r.setup.state == netsetup.WAITING)
+        card = r.setup.card()
+        report.check("the setup card still shows the PIN, which the gesture "
+                     "has just replaced with a random one",
+                     card["pin"] == r.auth.pin and r.auth.pin != "48291537"
+                     and len(r.auth.pin) == 6)
+    finally:
+        r.close()
+
+
+def scenario_page_gzip(report, root):
+    """A release carries gzipped copies of the page's text files, and the
+    servers hand them to a browser that accepts gzip."""
+    import gzip
+    import http.client
+    import tarfile
+
+    from firmware.webui import serve
+    from firmware.webui import server as server_mod
+
+    from . import bundle
+
+    path = os.path.join(root, "gzip-bundle.tar.gz")
+    bundle.build(path, "9.9.9")
+    with tarfile.open(path) as archive:
+        names = set(archive.getnames())
+        packed = archive.extractfile(
+            "firmware/webui/static/app.css.gz").read()
+    with open(os.path.join(server_mod.STATIC, "app.css"), "rb") as fh:
+        plain = fh.read()
+    page = "firmware/webui/static/"
+    report.check("the bundle has a gzipped copy of each text file of the "
+                 "page, and the original",
+                 all(page + n in names and page + n + ".gz" in names
+                     for n in ("index.html", "app.css", "app.js",
+                               "js/core.js", "i18n/sl.json"))
+                 and gzip.decompress(packed) == plain
+                 and len(packed) < len(plain) / 2,
+                 "%d -> %d" % (len(plain), len(packed)))
+    report.check("fonts and images are not compressed again, and nothing "
+                 "outside the page is",
+                 page + "fonts/quicksand.woff2.gz" not in names
+                 and page + "icons/icon-32.png.gz" not in names
+                 and not any(n.endswith(".gz") and not n.startswith(page)
+                             for n in names))
+    report.check("the same page makes the same bytes",
+                 packed == gzip.compress(plain, 9, mtime=0))
+
+    # Serve a folder laid out like a release, with one file that has a copy.
+    static = os.path.join(root, "gzip-static")
+    os.makedirs(static, exist_ok=True)
+    body = b"body { color: teal; }\n" * 40
+    for name, data in (("index.html", b"<p>hello</p>"), ("app.css", body),
+                       ("app.css.gz", gzip.compress(body))):
+        with open(os.path.join(static, name), "wb") as fh:
+            fh.write(data)
+    real = server_mod.STATIC
+    server_mod.STATIC = static
+    r = SetupRig(root, "gzipserver")
+    server = serve(r.api, host="127.0.0.1", port=0)
+    port = server.server_address[1]
+
+    def get(name, accept):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", name, headers={"Accept-Encoding": accept}
+                     if accept else {})
+        response = conn.getresponse()
+        got = (response.status, response.getheader("Content-Encoding"),
+               response.getheader("Content-Type"), response.read(),
+               response.getheader("Vary"))
+        conn.close()
+        return got
+
+    try:
+        status, coding, kind, data, vary = get("/app.css", "gzip, deflate")
+        report.check("a browser that accepts gzip gets the small copy, "
+                     "labelled as the stylesheet it is",
+                     status == 200 and coding == "gzip" and kind == "text/css"
+                     and vary == "Accept-Encoding"
+                     and gzip.decompress(data) == body)
+        status, coding, _, data, _ = get("/app.css", None)
+        report.check("one that does not gets the file as it is",
+                     status == 200 and coding is None and data == body)
+        status, coding, _, data, _ = get("/", "gzip")
+        report.check("a file with no gzipped copy is served as it is",
+                     status == 200 and coding is None
+                     and data == b"<p>hello</p>")
+    finally:
+        server_mod.STATIC = real
+        server.shutdown()
+        server.server_close()
+        r.close()

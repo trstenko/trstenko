@@ -20,11 +20,13 @@ firmware on it -- see `auth.py`.
     POST /api/update/install    unpack it and swap to it
     POST /api/update/revert     go back to the release before this one
 
+    POST /api/v1/pin            {"pin", "new_pin"}: choose your own PIN
     /api/v1/...                 settings and reminders; see v1.py
 """
 
 from firmware.updates import version as version_mod
 
+from . import captive
 from .v1 import V1Api
 
 NOT_FOUND = (404, {"error": "no such endpoint"})
@@ -56,6 +58,11 @@ class UpdateApi:
         if self.auth is not None and not self.auth.check(token):
             return UNPAIRED
 
+        if path == "/api/v1/pin":
+            if method != "POST":
+                return BAD_METHOD
+            return self._change_pin(body, token)
+
         if path == "/api/v1" or path.startswith("/api/v1/"):
             return self.v1.dispatch(method, path, raw, query)
 
@@ -80,7 +87,44 @@ class UpdateApi:
             return BAD_METHOD
         return action(body)
 
+    def captive(self, host_header):
+        """Where a request for `host_header` should be sent instead, or None.
+        Only ever a redirect while the setup hotspot is up (`captive.py`).
+        Reads one attribute of the device and changes nothing."""
+        setup = getattr(self.device, "netsetup", None)
+        if setup is None:
+            return None
+        return captive.redirect(host_header, setup.state)
+
+    def stream(self, path, token=None):
+        """`GET /api/v1/events`, which is the one answer that is not a dict.
+        Returns None when `path` is not the stream, else (status, body)."""
+        if "/" + path.strip("/") != "/api/v1/events":
+            return None
+        if self.auth is not None and not self.auth.check(token):
+            return UNPAIRED
+        return self.v1.open_stream()
+
     # ---- handlers ----
+
+    def _change_pin(self, body, token):
+        """The owner's own PIN, in place of the one the device made. It asks
+        for the current PIN again, under the same lockout as pairing. Handled
+        here and not in a command: the PIN is the web layer's, not the
+        device's, and the main thread never sees it."""
+        if self.auth is None:
+            return 409, {"error": "this device is not locked"}
+        ok, wait = self.auth.confirm(body.get("pin"))
+        if not ok:
+            if wait > 0:
+                return 429, {"error": "Too many wrong PINs. Wait a moment.",
+                             "retry_after": round(wait, 1)}
+            return 403, {"error": "That is not the PIN on the device.",
+                         "needs_pin": True}
+        problem = self.auth.set_pin(body.get("new_pin"), keep=token)
+        if problem:
+            return 400, {"error": problem}
+        return 200, {"ok": True}
 
     def _pair(self, body):
         """Swap the PIN shown on the device for a token.

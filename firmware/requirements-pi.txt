@@ -15,6 +15,12 @@ pyalsaaudio>=0.10
 # The setup QR code on the panel.
 qrcode>=7.4
 
+# Speech. Piper runs in a process of its own (firmware/assistant/tts.py), so a
+# crash costs the voice and not the face, and its GPL licence stays at arm's
+# length. Pin onnxruntime to the version that passes `import onnxruntime` on the
+# board's first boot (docs/research/llm-workflow.md, Finding 14).
+piper-tts==1.8.0
+
 # Wake word. Both engines install here because the competition unit and a
 # sold unit are the same image with a config flag -- see
 # docs/research/software-stack.md and firmware/wakeword/ for which one a

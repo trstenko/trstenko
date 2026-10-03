@@ -37,6 +37,16 @@ DEFAULTS = {
     "owner": {"name": "", "language": "en", "timezone": "Europe/Ljubljana",
               "location": ""},
     "assistant": {"provider": "gemini", "model": "", "fallback_provider": "",
+                  # Who turns speech into text when the chosen provider cannot
+                  # (Ollama, Grok): empty means the first provider with a key
+                  # that can (plan 04).
+                  "stt_provider": "",
+                  # Whether the key is on a provider's free tier. The device
+                  # cannot tell from the key, and a wrong guess is a budget
+                  # that either stops a free user or never stops a paying one,
+                  # so it is the owner's say-so and defaults to counting the
+                  # cost (plan 05).
+                  "free_tier": False,
                   "conversation_log": False, "memories_in_prompt_tokens": 400},
     "voice": {"piper_voice": "en_US-ljspeech-medium", "volume": 0.6,
               "barge_in": False},
@@ -45,6 +55,11 @@ DEFAULTS = {
     "screen": {"sleep_after_min": 10, "night_off": True},
     "budget": {"monthly_usd": 5.0, "daily_usd": None, "daily_turns": None,
                "max_output_tokens": 300, "max_tool_steps": 4},
+    # Whether the screen may show the pairing PIN on a long volume press and
+    # after joining Wi-Fi. An owner who chose their own PIN can turn it off.
+    # The setup card always shows it: setup makes a new random PIN, and a PIN
+    # nobody can read is a device nobody can pair with.
+    "security": {"show_pin": True},
     "prices_override": {},
 }
 
@@ -74,6 +89,8 @@ RULES = {
     ("assistant", "provider"): ("choice", PROVIDERS),
     ("assistant", "model"): ("text", 80),
     ("assistant", "fallback_provider"): ("choice", ("",) + PROVIDERS),
+    ("assistant", "stt_provider"): ("choice", ("",) + PROVIDERS),
+    ("assistant", "free_tier"): ("bool",),
     ("assistant", "conversation_log"): ("bool",),
     ("assistant", "memories_in_prompt_tokens"): ("int", 0, 2000),
 
@@ -88,6 +105,8 @@ RULES = {
     ("quiet", "from"): ("clock",),
     ("quiet", "to"): ("clock",),
     ("quiet", "volume"): ("float", 0.0, 1.0),
+
+    ("security", "show_pin"): ("bool",),
 
     ("screen", "sleep_after_min"): ("int", 1, 1440),
     ("screen", "night_off"): ("bool",),

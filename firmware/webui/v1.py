@@ -7,6 +7,11 @@
                                             "repeat"?, "tz"?}
     POST  /api/v1/reminders/{id}/cancel
     POST  /api/v1/reminders/{id}/snooze    {"minutes"?}
+    POST  /api/v1/alert/stop               acknowledge whatever is going off
+    GET   /api/v1/setup                    setup mode: its state, the networks
+    POST  /api/v1/setup/scan               look for networks again
+    POST  /api/v1/setup/join               {"ssid", "password"?}
+    POST  /api/v1/factory-reset            {"pin"}: everything, then a restart
     GET   /api/v1/settings                 everything but secrets
     PATCH /api/v1/settings                 {"voice": {"volume": 0.4}}, validated
 
@@ -36,7 +41,8 @@ API_VERSION = 1
 
 # What a client can rely on being here. A new capability is added to this list
 # and never changes an old one, so an app can ask rather than guess.
-FEATURES = ("reminders", "settings")
+FEATURES = ("reminders", "settings", "memories", "keys", "usage", "privacy",
+            "live", "setup")
 
 STATUS = {ev.INVALID: 400, ev.NOT_FOUND: 404, ev.CONFLICT: 409,
           ev.UNAVAILABLE: 503}
@@ -53,6 +59,15 @@ def _bad(message):
     return 400, {"error": message}
 
 
+# Plan 07: at most this many live pages at once; each holds a connection and a
+# thread open. A fourth is told to poll `/state` instead.
+MAX_STREAMS = 3
+STREAM_PERIOD = 1.0
+NL = bytes([10])
+EOL = NL + NL
+STREAM_MAX_SECONDS = 3600.0
+
+
 class V1Api:
     def __init__(self, owner, commander=None, timeout=ev.COMMAND_TIMEOUT):
         """`owner` is the `UpdateApi` this belongs to, which holds the device
@@ -62,6 +77,7 @@ class V1Api:
         passes a function that also runs a tick, since there is no loop
         running in another thread."""
         self.owner = owner
+        self._face_shapes = None
         self.timeout = timeout
         self._commander = commander
 
@@ -107,9 +123,169 @@ class V1Api:
             if parts[2] == "cancel":
                 return self._command("reminders.cancel", {"id": job_id})
             return self._reminders_snooze(job_id, body)
+        if parts == ["alert", "stop"]:
+            # "I heard you", as a button on the device would say it. Not a
+            # cancel: a repeating reminder that is stopped still comes back
+            # tomorrow, and a cancelled one does not.
+            return self._only(method, "POST",
+                              lambda: self._command("announce.ack"))
+        if parts == ["setup"]:
+            return self._only(method, "GET",
+                              lambda: self._command("setup.status"))
+        if parts == ["setup", "scan"]:
+            return self._only(method, "POST",
+                              lambda: self._command("setup.scan"))
+        if parts == ["setup", "join"]:
+            return self._only(method, "POST", lambda: self._setup_join(body))
+        if parts == ["faces"]:
+            return self._only(method, "GET", self._faces)
+        if parts == ["live"]:
+            return self._only(method, "GET", lambda: self._command("live"))
+        if parts == ["assistant"]:
+            return self._only(method, "GET",
+                              lambda: self._command("assistant.status"))
+        if parts == ["memories"]:
+            if method == "GET":
+                return self._command("memories.list")
+            if method == "POST":
+                return self._memory_add(body)
+            return self._wrong_method("GET, POST")
+        if parts and parts[0] == "memories" and len(parts) in (2, 3):
+            return self._memory_item(method, parts, body)
+        if parts == ["keys"]:
+            return self._only(method, "GET",
+                              lambda: self._command("keys.status"))
+        if len(parts) in (2, 3) and parts[0] == "keys":
+            return self._key(method, parts, body)
+        if parts == ["usage"]:
+            return self._only(method, "GET", lambda: self._usage(query))
+        if parts == ["privacy", "export"]:
+            return self._only(method, "GET",
+                              lambda: self._command("privacy.export"))
+        if parts == ["factory-reset"]:
+            return self._only(method, "POST",
+                              lambda: self._factory_reset(body))
+        if parts == ["privacy", "delete"]:
+            return self._only(method, "POST",
+                              lambda: self._privacy_delete(body))
         return 404, {"error": "no such endpoint"}
 
     # ---- handlers ----
+
+    def _faces(self):
+        """The shapes of each face at rest, for the page to draw the same face
+        the screen does. The tracks (blinks, bounces) are the screen's."""
+        if self._face_shapes is None:
+            import json
+            import os
+
+            from firmware.face import facedata
+
+            path = os.path.join(os.path.dirname(os.path.abspath(
+                facedata.__file__)), "data", "faces.json")
+            with open(path, "r", encoding="utf-8") as fh:
+                states = json.load(fh)["states"]
+            self._face_shapes = {
+                name: [{k: shape[k] for k in ("name", "x", "y", "w", "h", "r",
+                                              "color")}
+                       for shape in state["shapes"]]
+                for name, state in states.items()}
+        return 200, {"faces": self._face_shapes, "width": 320, "height": 240}
+
+    def _setup_join(self, body):
+        if not isinstance(body, dict):
+            return _bad("Send the network as a JSON object.")
+        return self._command("setup.join", {"ssid": body.get("ssid"),
+                                            "password": body.get("password")})
+
+    def _memory_add(self, body):
+        if not isinstance(body, dict):
+            return _bad("Send the memory as a JSON object.")
+        status, payload = self._command("memories.save", {
+            "text": body.get("text"), "category": body.get("category"),
+            "pinned": bool(body.get("pinned")), "source": "web"})
+        if status == 200 and not payload.get("ok"):
+            return 400, {"error": payload.get("error", "not saved"),
+                         "code": payload.get("code")}
+        return (201 if status == 200 else status), payload
+
+    def _memory_item(self, method, parts, body):
+        if not parts[1].isdigit():
+            return 404, {"error": "There is no memory %s." % parts[1][:20]}
+        memory_id = int(parts[1])
+        if len(parts) == 2:
+            if method != "DELETE":
+                return self._wrong_method("DELETE")
+            status, payload = self._command("memories.forget",
+                                            {"id": memory_id})
+            if status == 200 and not payload.get("ok"):
+                return 404, {"error": payload.get("error", "not found")}
+            return status, payload
+        if parts[2] != "pin":
+            return 404, {"error": "no such endpoint"}
+        if method != "POST":
+            return self._wrong_method("POST")
+        pinned = True if not isinstance(body, dict) else             bool(body.get("pinned", True))
+        return self._command("memories.pin", {"id": memory_id,
+                                              "pinned": pinned})
+
+    def _key(self, method, parts, body):
+        provider = parts[1]
+        if len(parts) == 3:
+            if parts[2] != "test":
+                return 404, {"error": "no such endpoint"}
+            if method != "POST":
+                return self._wrong_method("POST")
+            return self._command("keys.test", {"provider": provider})
+        if method != "POST":
+            return self._wrong_method("POST")
+        if not isinstance(body, dict):
+            return _bad("Send the key as a JSON object.")
+        args = {"provider": provider}
+        if provider == "ollama":
+            args["host"] = body.get("host", "")
+        else:
+            args["key"] = body.get("key", "")
+        return self._command("keys.set", args)
+
+    def _usage(self, query):
+        try:
+            days = int(query.get("days", 30))
+        except (TypeError, ValueError):
+            return _bad("days must be 7, 30 or 90.")
+        return self._command("usage.history", {"days": days})
+
+    def _privacy_delete(self, body):
+        """Needs the PIN again: it cannot be undone."""
+        if not isinstance(body, dict):
+            return _bad("Send what to delete as a JSON object.")
+        refused = self._confirm(body)
+        if refused is not None:
+            return refused
+        return self._command("privacy.delete", {"what": body.get("what")})
+
+    def _factory_reset(self, body):
+        """Needs the PIN again, like every delete."""
+        if not isinstance(body, dict):
+            return _bad("Send the PIN as a JSON object.")
+        refused = self._confirm(body)
+        if refused is not None:
+            return refused
+        return self._command("factory.reset")
+
+    def _confirm(self, body):
+        """None if the caller may go on, else the refusal."""
+        auth = self.owner.auth
+        if auth is None:
+            return None
+        ok, wait = auth.confirm(body.get("pin"))
+        if ok:
+            return None
+        if wait > 0:
+            return 429, {"error": "Too many wrong PINs. Wait a moment.",
+                         "retry_after": round(wait, 1)}
+        return 403, {"error": "That is not the PIN on the device.",
+                     "needs_pin": True}
 
     def _info(self):
         data_root = (self.manager.config.data_root
@@ -166,6 +342,41 @@ class V1Api:
         if body and "minutes" in body:
             args["minutes"] = body["minutes"]
         return self._command("reminders.snooze", args)
+
+    # ---- the live stream ----
+
+    def open_stream(self, sleep=None):
+        """For `GET /api/v1/events`. Returns (status, body) where a 200 body
+        is an iterator of Server-Sent-Events frames, one `live` event a second.
+        It ends by itself after an hour (the page reconnects), when the device
+        goes away, or when the consumer stops iterating."""
+        import json
+        import threading
+        import time
+
+        sleep = sleep or time.sleep
+        lock = self.__dict__.setdefault("_stream_lock", threading.Lock())
+        with lock:
+            if self.__dict__.get("_streams", 0) >= MAX_STREAMS:
+                return 503, {"error": "Too many pages are open. Close one."}
+            self._streams = self.__dict__.get("_streams", 0) + 1
+
+        def frames():
+            started = time.monotonic()
+            try:
+                yield b"retry: 3000" + EOL
+                while time.monotonic() - started < STREAM_MAX_SECONDS:
+                    status, payload = self._command("live")
+                    if status == 200:
+                        yield (b"event: live" + NL + b"data: "
+                               + json.dumps(payload).encode("utf-8") + EOL)
+                    else:
+                        yield b": device busy" + EOL
+                    sleep(STREAM_PERIOD)
+            finally:
+                with lock:
+                    self._streams -= 1
+        return 200, frames()
 
     # ---- plumbing ----
 

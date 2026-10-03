@@ -20,3 +20,13 @@ cryptography>=42
 # gets one from this package. Development only: the firmware does not install
 # it, and it is not in the release bill of materials.
 tzdata>=2024.1
+
+# The setup card's QR code (firmware/face/setupcard.py). The board gets it from
+# requirements-pi.txt; here it lets the emulator draw the same card. Without
+# it the card shows the hotspot's name and password as text.
+qrcode>=7.4
+
+# The wake word and the end-of-speech detector run on the PC emulator too, so
+# the whole product can be tried on a laptop (docs/plans/09-build-order.md).
+# The firmware's own list for the board is firmware/requirements-pi.txt.
+pymicro-wakeword>=2.0

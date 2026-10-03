@@ -8,7 +8,8 @@ path inside `docs/`. Either one means the code that works on a laptop stops
 working once it is copied onto an SD card, and the way that shows up is a
 device that boots to a black screen.
 
-Run it before a release. It reads the source; it does not import anything.
+Run it before a release. It reads the source and does not import the firmware,
+except the loader of the assistant's data tables, which is standard library only.
 """
 
 import ast
@@ -116,6 +117,46 @@ def check_migrations(directory=MIGRATIONS):
     return problems
 
 
+def check_assistant_tables():
+    """The provider and price tables ship with the firmware and are read at
+    boot. A typo in one is a device that cannot reach its model, found by the
+    owner, so the same checks the loader makes run here and fail the build
+    (plan 04). Imports the loader, which is standard library only."""
+    from firmware.assistant import table
+
+    problems = []
+    try:
+        providers = table.load_providers()
+        prices = table.load_prices()
+    except table.TableError as exc:
+        return ["firmware/assistant: %s" % problem
+                for problem in str(exc).split("; ")]
+    problems += ["firmware/assistant: %s" % p
+                 for p in table.cross_check(providers, prices)
+                 + table.zone_problems(providers)]
+    return problems
+
+
+def check_assistant_language():
+    """Every line the device speaks exists in every language, so nothing falls
+    back to English without anyone noticing."""
+    from firmware.assistant import lang
+
+    return ["firmware/assistant: %s" % p for p in lang.check()]
+
+
+def check_assistant_voices():
+    """The voice registry is where every voice's licence is recorded, so a
+    mistake in it is a licensing mistake."""
+    from firmware.assistant import voices
+
+    try:
+        voices.VoiceRegistry.load()
+    except voices.VoiceError as exc:
+        return ["firmware/assistant: %s" % p for p in str(exc).split("; ")]
+    return []
+
+
 def check():
     problems = []
 
@@ -149,6 +190,9 @@ def check():
                     "the robot" % rel)
 
     problems += check_migrations()
+    problems += check_assistant_tables()
+    problems += check_assistant_language()
+    problems += check_assistant_voices()
 
     baked = os.path.join(FIRMWARE, "face", "data", "faces.json")
     if not os.path.exists(baked):

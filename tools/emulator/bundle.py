@@ -11,12 +11,19 @@ would test the download and nothing after it, so this makes the real shape:
     wheels/                the packages, so the install never needs the network
     VERSION
 
+The page's text files (`firmware/webui/static/`) are shipped twice: as they
+are, and gzipped beside themselves as `name.gz`. The device serves the small
+one to any browser that accepts it (plan 07): over a hotspot from a Pi that
+is a third of the bytes, and compressing at release time costs the device
+nothing.
+
 The firmware copied in is this checkout's, minus the parts a release does not
 carry. `pad_to` then inflates it to whatever size the test wants, with an
 incompressible blob, because a bundle that gzips down to nothing makes the
 download finish before the progress bar has drawn.
 """
 
+import gzip
 import io
 import json
 import os
@@ -28,6 +35,10 @@ FIRMWARE = os.path.normpath(os.path.join(
     os.path.dirname(__file__), "..", "..", "firmware"))
 
 SKIP_DIRS = {"__pycache__", "staging", "releases"}
+
+# What is worth compressing in the page. Fonts and images already are.
+PAGE_DIR = os.path.join("webui", "static")
+PAGE_TEXT = (".html", ".css", ".js", ".json", ".svg")
 
 
 def build(path, version, requires_base=0, layout=1, pad_to=0, broken=False):
@@ -60,6 +71,11 @@ def build(path, version, requires_base=0, layout=1, pad_to=0, broken=False):
                            b"this is not python and will not import\n")
                 continue
             archive.add(source, arcname=name)
+            if rel.startswith(PAGE_DIR + os.sep) and rel.endswith(PAGE_TEXT):
+                with open(source, "rb") as fh:
+                    # mtime=0, so the same page always makes the same bytes.
+                    _add_bytes(archive, name + ".gz",
+                               gzip.compress(fh.read(), 9, mtime=0))
 
         if pad_to:
             current = os.path.getsize(path) if os.path.exists(path) else 0

@@ -35,6 +35,8 @@ from firmware.updates import UpdateConfig, UpdateManager
 from firmware.webui import Auth, UpdateApi
 
 from . import audio as audio_mod
+from . import setup_scenarios
+from . import eval_scenarios
 from .clock import FakeClock
 from .fake_releases import FakeReleases
 from .hal import EmulatedHAL
@@ -1039,7 +1041,7 @@ def scenario_events(report, root):
                   "TurnFailed", "SpeakingStarted", "SpeakingDone", "TtsDied",
                   "SpeakingLevel", "Due", "ClockSynced", "NetworkChanged",
                   "LowVoltage", "Hot", "Shutdown",
-                  "WorkerDied"} == set(ev.KINDS))
+                  "WorkerDied", "NetSetup"} == set(ev.KINDS))
 
 
 def scenario_fake_clock(report, root):
@@ -3323,6 +3325,32 @@ def scenario_api_v1(report, root):
                             % other["id"])
     report.check("and cancelled", status == 200
                  and gone["reminder"]["state"] == "cancelled")
+    # The page's Stop button: the same "I heard you" as a press on the device.
+    status, nothing = rig.call("POST", "/api/v1/alert/stop")
+    report.check("stopping when nothing is going off is a 409",
+                 status == 409, str(nothing))
+    status, daily = rig.call("POST", "/api/v1/reminders",
+                             {"text": "feed the cat", "repeat": "daily",
+                              "local_time": "2026-10-02T19:00"})
+    r.advance_to(local_epoch(2026, 10, 2, 19, 0))
+    r.run(1.5)
+    status, state = rig.call("GET", "/api/v1/state")
+    status, stopped = rig.call("POST", "/api/v1/alert/stop")
+    after = rig.call("GET", "/api/v1/state")[1]
+    kept = rig.call("GET", "/api/v1/reminders",
+                    query={"state": "pending"})[1]["reminders"]
+    report.check("Stop from the page silences a ringing repeat, and it is "
+                 "still set for tomorrow",
+                 state["reminders"]["ringing"] == daily["id"]
+                 and stopped == {"ok": True}
+                 and after["reminders"]["ringing"] is None
+                 and [x["id"] for x in kept] == [daily["id"]]
+                 and kept[0]["local_time"].startswith("2026-10-03"),
+                 "%s %s" % (stopped, kept))
+    rig.call("POST", "/api/v1/reminders/%d/cancel" % daily["id"])
+    status, wrong = rig.call("GET", "/api/v1/alert/stop")
+    report.check("and it only answers a POST", status == 405)
+
     status, again = rig.call("POST", "/api/v1/reminders/%d/cancel"
                              % other["id"])
     report.check("cancelling again is a 409 with the reason",
@@ -3501,6 +3529,10 @@ def scenario_web_servers(report, root):
         results = {}
         results["page"] = request("GET", "/", None, None)
         results["script"] = request("GET", "/app.js", None, None)
+        results["module"] = request("GET", "/js/views/updates.js", None, None)
+        results["font"] = request("GET", "/fonts/quicksand.woff2", None, None)
+        results["strings"] = request("GET", "/i18n/sl.json", None, None)
+        results["escape"] = request("GET", "/js/../../server.py", None, None)
         results["missing"] = request("GET", "/nothing-here", None, None)
         results["unpaired"] = request("GET", "/api/v1/info", None, None)
         results["info"] = request("GET", "/api/v1/info", None, rig.token)
@@ -3519,10 +3551,15 @@ def scenario_web_servers(report, root):
 
         report.check("%s: the page and its script are served" % label,
                      results["page"][0] == 200 and results["script"][0] == 200
-                     and b"<script src=\"/app.js\"></script>"
+                     and b"<script type=\"module\" src=\"/app.js\"></script>"
                      in results["page"][2]
                      and b"<script>" not in results["page"][2]
-                     and b"fetch(\"/api/update\"" in results["script"][2])
+                     and b"/api/update" in results["module"][2])
+        report.check("%s: the font, the strings and the modules are served, "
+                     "and a path out of the folder is not" % label,
+                     results["font"][0] == 200 and results["strings"][0] == 200
+                     and json.loads(results["strings"][2])["nav_home"]
+                     and results["escape"][0] == 404)
         report.check("%s: an unknown path is a 404" % label,
                      results["missing"][0] == 404)
         report.check("%s: 401 without a token" % label,
@@ -3622,10 +3659,84 @@ def scenario_web_servers(report, root):
     rig.rig.close()
 
 
+def scenario_soak_smoke(report, root):
+    """Twelve simulated minutes of the soak test, so the test itself keeps
+    working. The real one is `--soak 24h`."""
+    from . import soak
+
+    soak.run(0.2, report, root, say=lambda line: None)
+
+
 def main(argv=None):
+    from . import assistant_scenarios as asst
+
+    args = list(sys.argv[1:] if argv is None else argv)
     root = tempfile.mkdtemp(prefix="trstenko-headless-")
     report = Report()
+    if "--soak" in args:
+        # A simulated day (or `--soak 2h`), on its own: see soak.py.
+        from . import soak
+
+        at = args.index("--soak")
+        hours = (soak.parse_duration(args[at + 1]) if len(args) > at + 1
+                 else 24.0)
+        print("== soak: %g simulated hours" % hours)
+        try:
+            soak.run(hours, report, root)
+        finally:
+            for rig in list(SchedRig.open_rigs):
+                rig.close()
+            asst.close_all()
+            shutil.rmtree(root, ignore_errors=True)
+        return report.done()
     scenarios = [
+        ("the provider table", asst.scenario_tables),
+        ("what things cost", asst.scenario_prices),
+        ("counting the cost", asst.scenario_meter_costs),
+        ("budgets and midnight", asst.scenario_meter_budgets),
+        ("cooldowns, quota and rate limits", asst.scenario_meter_cooldowns),
+        ("the meter from several threads", asst.scenario_meter_threads),
+        ("the meter fed by the real client", asst.scenario_meter_with_client),
+        ("the meter's chores", asst.scenario_meter_chores),
+        ("the tool registry", asst.scenario_tools_registry),
+        ("checking a tool's arguments", asst.scenario_tools_arguments),
+        ("the assistant's memory", asst.scenario_tools_memory),
+        ("timers, reminders and volume by voice",
+         asst.scenario_tools_reminders),
+        ("cutting and cleaning speech", asst.scenario_speech_text),
+        ("the prompt and the session", asst.scenario_prompt_and_session),
+        ("the tool loop", asst.scenario_loop),
+        ("the tool loop: cancelling", asst.scenario_loop_cancel),
+        ("the tool loop: every way it can fail", asst.scenario_loop_failures),
+        ("the tool loop: audio in the request", asst.scenario_loop_audio),
+        ("listening: wake word and recording", asst.scenario_audio_in),
+        ("deciding when someone has stopped talking", asst.scenario_vad),
+        ("the emulator's audio from two threads",
+         asst.scenario_bridge_threads),
+        ("one whole turn, on a device", asst.scenario_assistant_turn),
+        ("local commands and the acknowledgement window, by voice",
+         asst.scenario_assistant_commands),
+        ("cancelling a turn that is in flight",
+         asst.scenario_assistant_cancel),
+        ("the page keys, memories, usage and privacy",
+         asst.scenario_web_admin),
+        ("the page's strings and size", asst.scenario_web_strings),
+        ("a turn that fails, and the voice that dies",
+         asst.scenario_assistant_failures),
+        ("speech to text", asst.scenario_stt),
+        ("the voices", asst.scenario_voices),
+        ("speaking through Piper", asst.scenario_tts),
+        ("when Piper fails", asst.scenario_tts_failures),
+        ("the real Piper, if it is here", asst.scenario_tts_real),
+        ("commands that need no model", asst.scenario_intents),
+        ("the model client: replies", asst.scenario_provider_replies),
+        ("the model client: tool calls", asst.scenario_provider_tools),
+        ("the model client: telling failures apart",
+         asst.scenario_provider_classify),
+        ("the model client: errors and retries",
+         asst.scenario_provider_retries),
+        ("the model client: cut, stalled and cancelled",
+         asst.scenario_provider_faults),
         ("the event queue", scenario_events),
         ("the device on a fake clock", scenario_fake_clock),
         ("frame rates", scenario_frame_rates),
@@ -3655,6 +3766,22 @@ def main(argv=None):
         ("the mute switch", scenario_mute),
         ("a turn that fails", scenario_failed_turn),
         ("buttons and the setup gesture", scenario_setup_gesture),
+        ("setup mode: hotspot, card and joining Wi-Fi",
+         setup_scenarios.scenario_setup_mode),
+        ("setup mode on a new device", setup_scenarios.scenario_setup_new_device),
+        ("setup mode: the scan list, the code and the card",
+         setup_scenarios.scenario_setup_parts),
+        ("factory reset", setup_scenarios.scenario_factory_reset),
+        ("the address and PIN on a long press",
+         setup_scenarios.scenario_info_card),
+        ("the captive portal", setup_scenarios.scenario_captive_portal),
+        ("the owner's own PIN, and hiding it",
+         setup_scenarios.scenario_pin_options),
+        ("gzipped copies of the page", setup_scenarios.scenario_page_gzip),
+        ("the model evaluation: scoring", eval_scenarios.scenario_eval_scoring),
+        ("the model evaluation: the runner, on the fake provider",
+         eval_scenarios.scenario_eval_runner),
+        ("the soak test, briefly", scenario_soak_smoke),
         ("an optional update", scenario_optional_update),
         ("an urgent update", scenario_urgent_update),
         ("an urgent update, start to finish", scenario_urgent_end_to_end),
@@ -3682,6 +3809,7 @@ def main(argv=None):
     finally:
         for rig in list(SchedRig.open_rigs):
             rig.close()
+        asst.close_all()
         shutil.rmtree(root, ignore_errors=True)
     return report.done()
 

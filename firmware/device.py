@@ -106,10 +106,15 @@ class Device:
         self.pipeline = pipeline
         self.updater = updater
         self.on_setup = on_setup or (lambda: None)
+        # A long press of a volume button: show where the page is and its PIN.
+        self.on_info = lambda: None
         self._has_callback = on_log is not None
         self.on_log = on_log or (lambda line: None)
         self._closers = []
         self._closed = False
+        # Subsystems that have something to say on the page's Home screen
+        # (the assistant, for one), as {name: callable returning a dict}.
+        self.status_extra = {}
 
         self.states = state_defs.build()
         self.renderer = FaceRenderer(ssaa=ssaa)
@@ -122,6 +127,11 @@ class Device:
         self.error_until = 0.0
         self.error_text = ""
         self.setup_mode = False
+        # Setup mode (firmware/netsetup.py), and the picture it puts on the
+        # screen in place of the face: `_card()` returns an image or None.
+        self.netsetup = None
+        self._card = None
+        self._card_shown = None
         self.frames = 0
         self.ticks = 0
         self.draw_ms = 0.0
@@ -157,9 +167,14 @@ class Device:
         self.on(ev.WORKER_DIED,
                 lambda event: self.supervisor.died(event.data, self.mono()))
         self.command("set_volume", self._cmd_set_volume)
+        self.command("volume.change", self._cmd_volume_change)
+        self.command("announce.window", self._cmd_announce_window)
+        self.command("announce.ack", self._cmd_announce_ack)
+        self.command("announce.snooze", self._cmd_announce_snooze)
         self.command("settings.update", self._cmd_settings_update)
         self.command("settings.get", self._cmd_settings_get)
         self.command("state", self._cmd_state)
+        self.command("live", self._cmd_live)
         # Always registered, so a device without a scheduler says so rather
         # than claiming the command does not exist.
         self.command("reminders.add", self._cmd_reminders_add)
@@ -288,6 +303,40 @@ class Device:
         self._set_volume(float(level))
         return {"volume": self.hal.speaker.get_volume()}
 
+    def _cmd_announce_window(self, args):
+        """Is something going off, so that "stop" and "snooze" mean it? The
+        voice commands for it are only listened for then (plan 02)."""
+        return {"open": bool(self.announcer is not None
+                             and self.announcer.current is not None)}
+
+    def _cmd_announce_ack(self, args):
+        if self.announcer is None or not self.announcer.acknowledge():
+            raise ev.CommandError("nothing is going off", ev.CONFLICT)
+        return {"ok": True}
+
+    def _cmd_announce_snooze(self, args):
+        minutes = args.get("minutes") if isinstance(args, dict) else None
+        if self.announcer is None:
+            raise ev.CommandError("nothing is going off", ev.CONFLICT)
+        try:
+            done = self.announcer.snooze(minutes)
+        except SchedulerError as exc:
+            raise ev.CommandError(str(exc), exc.kind)
+        if not done:
+            raise ev.CommandError("only a reminder can be snoozed",
+                                  ev.CONFLICT)
+        return {"ok": True}
+
+    def _cmd_volume_change(self, args):
+        """A step louder or quieter, by the same amount as the buttons: one
+        code path, so a spoken "turn it up" and a press cannot disagree."""
+        direction = args.get("direction") if isinstance(args, dict) else args
+        if direction not in ("up", "down"):
+            raise ev.CommandError("direction must be up or down")
+        step = VOLUME_STEP if direction == "up" else -VOLUME_STEP
+        self._set_volume(self.hal.speaker.get_volume() + step)
+        return {"volume": self.hal.speaker.get_volume()}
+
     def _set_volume(self, level):
         level = max(0.0, min(1.0, level))
         self.hal.speaker.set_volume(level)
@@ -361,6 +410,26 @@ class Device:
                             if self.announcer else None),
             },
             "alerts": alerts,
+        }
+
+    def _cmd_live(self, args):
+        """What the page's live face needs, small enough to ask every second:
+        the face, the stage of the turn, the level, and the running timers."""
+        turn = self.turn
+        timers = []
+        if self.scheduler is not None:
+            timers = [{"id": j["id"], "text": j["text"],
+                       "due_wall": j["due_wall"], "length": j.get("length")}
+                      for j in self.scheduler.list("pending")
+                      if j["kind"] == "timer"]
+        return {
+            "face": self.face.current,
+            "stage": turn.stage if turn is not None else "idle",
+            "level": round(turn.level(), 3) if turn is not None else 0.0,
+            "muted": self.hal.muted(),
+            "now": self.wall(),
+            "timers": timers,
+            "ringing": self.announcer.ringing if self.announcer else None,
         }
 
     def _apply_settings(self, changed):
@@ -551,6 +620,7 @@ class Device:
         if event.name == SETUP_COMBO:
             self.setup_mode = True
             self.log("setup requested")
+            self.wake_screen(now)
             self.on_setup()
             return
 
@@ -575,6 +645,12 @@ class Device:
                 self.hal.system.reboot()
             return
 
+        if event.action == LONG and event.name in (VOL_DOWN, VOL_UP):
+            # The page asks for a PIN and only the screen may show it. This is
+            # how its owner asks to see it; it does not change the volume.
+            self.log("address and PIN requested")
+            self.on_info()
+            return
         if event.action != SHORT:
             return
         if event.name in (VOL_DOWN, VOL_UP):
@@ -647,7 +723,32 @@ class Device:
             return "face_boot"
         return "face_idle"
 
+    def set_card(self, fn):
+        """`fn()` returns a whole-screen image to show instead of the face, or
+        None for the face. Setup mode uses it for the QR code."""
+        self._card = fn
+
     def _draw_frame(self, now):
+        card = self._card() if self._card is not None else None
+        if card is not None:
+            # Somebody has to read it: the screen stays on while it is up.
+            self.wake_screen(now)
+            # The face carries on underneath, undrawn. A new device boots
+            # straight into this card, and `healthy()` must still see it leave
+            # `face_boot`, or a first release would be rolled back for it.
+            want = self._face_for(now)
+            if want != self.face.current:
+                self.face.set(want, now,
+                              state_defs.blend_time(self.face.current, want))
+            if card is not self._card_shown:
+                self._card_shown = card
+                whole = (0, 0, self.hal.panel.width, self.hal.panel.height)
+                self.hal.panel.push(card, whole)
+                # The face comes back over all of it, not over its own box.
+                self._stale = whole
+            self.frames += 1
+            return
+        self._card_shown = None
         if self.screen_off:
             return
         self._draw(now)
@@ -707,10 +808,15 @@ class Device:
     def stop(self):
         self.running = False
 
-    def add_closer(self, name, fn):
+    def add_closer(self, name, fn, first=False):
         """Something to do on the way out, such as flushing and closing the
-        database. They run in the order they were added."""
-        self._closers.append((name, fn))
+        database. They run in the order they were added; `first` puts one
+        ahead of the rest, for what has to be written before the database is
+        closed."""
+        if first:
+            self._closers.insert(0, (name, fn))
+        else:
+            self._closers.append((name, fn))
 
     def close(self):
         """The shutdown sequence (plan 01): cancel the turn, stop the audio and
@@ -762,6 +868,7 @@ class Device:
                           if self.scheduler is not None else None),
             "announcing": (self.announcer.summary()
                            if self.announcer is not None else None),
+            **{name: fn() for name, fn in self.status_extra.items()},
         }
 
 

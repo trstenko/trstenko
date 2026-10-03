@@ -24,7 +24,9 @@ much of it as exists so far:
    what came due while the device was off. Timers work at once; reminders
    wait for the clock to sync.
 6. Start the web server, which never blocks the loop.
-7. Tell systemd `READY=1`, then run.
+7. Setup mode's worker, which asks NetworkManager whether a home Wi-Fi is
+   saved. A device with none raises its hotspot and shows the setup card.
+8. Tell systemd `READY=1`, then run.
 
 The voice pipeline is not wired in yet (Phase 2). The device runs without one:
 it boots, shows a face, respects the mute switch and the buttons, and serves
@@ -46,11 +48,12 @@ import signal
 import sys
 import threading
 
-from . import events, logs, sdnotify
+from . import events, logs, netsetup, product, sdnotify
 from .device import Device
 from .hal import open_hal
 from .storage import DB_NAME, Database
 from .storage import migrate as migrate_mod
+from .storage import factory
 from .storage import secrets as secrets_mod
 from .storage import settings as settings_mod
 from .scheduler.wiring import wire as wire_scheduler
@@ -81,6 +84,14 @@ def build(hal, config=None, notifier=None, on_log=None):
                     db=db, settings=settings, secrets=secrets)
     device.add_closer("storage", db.close)
     wire_scheduler(device)
+    try:
+        from .assistant.wiring import wire_assistant
+
+        wire_assistant(device, hal, config.data_root)
+    except Exception:
+        # A device that cannot hear or speak still has a face, a mute switch
+        # and reminders, and says so on the page.
+        log.exception("the assistant could not start")
     if notifier is not None:
         # A step of the main loop, so a stalled loop stops pinging.
         device.add_step("watchdog", lambda now: notifier.watchdog(),
@@ -110,7 +121,9 @@ def run(device, notifier):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--port", type=int, default=8080)
+    # Port 80, so the address on the screen needs no number after it and the
+    # setup hotspot's captive portal can answer a phone (webui/captive.py).
+    ap.add_argument("--port", type=int, default=80)
     ap.add_argument("--no-web", action="store_true")
     args = ap.parse_args(argv)
 
@@ -126,11 +139,19 @@ def main(argv=None):
     device, updater = build(hal, notifier=notifier)
 
     # The page is reachable by anyone on the same Wi-Fi, so it is locked. The
-    # PIN belongs on the device's own screen next to the setup QR code; until
-    # that screen exists, the journal is where to find it.
+    # PIN is on the setup card, next to the QR code, and a long press of a
+    # volume button shows it again (netsetup.py). The journal carries it too,
+    # for whoever is debugging a device over SSH.
     auth = Auth(updater.config.data_root,
                 log=logging.getLogger("trstenko.auth").info)
     log.info("pairing PIN: %s", auth.pin)
+    network = netsetup.NmcliNetwork()
+    netsetup.wire(device, network,
+                  serial=product.serial(updater.config.data_root),
+                  pin=lambda: auth.pin, new_pin=auth.reset_pin)
+    # Last, so its closer runs after the database is closed.
+    factory.wire(device, updater.config.data_root, new_pin=auth.reset_pin,
+                 network=network)
 
     server = None
     if not args.no_web:

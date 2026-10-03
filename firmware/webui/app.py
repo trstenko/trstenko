@@ -18,12 +18,22 @@ from .headers import MAX_BODY, SECURITY_HEADERS
 def create_app(manager, device=None, auth=None):
     from flask import Flask, Response, request, send_from_directory
 
-    from .server import STATIC
+    import os
+
+    from .server import STATIC, accepts_gzip
 
     api = UpdateApi(manager, device, auth)
     app = Flask(__name__, static_folder=None)
 
     app.config["MAX_CONTENT_LENGTH"] = MAX_BODY
+
+    @app.before_request
+    def captive():
+        # A phone's "am I online" check, during setup: send it to the page.
+        target = api.captive(request.headers.get("Host"))
+        if target is not None and request.method in ("GET", "HEAD"):
+            return Response(status=302, headers={"Location": target,
+                                                 "Cache-Control": "no-store"})
 
     @app.after_request
     def secure(response):
@@ -38,9 +48,21 @@ def create_app(manager, device=None, auth=None):
 
     @app.get("/<path:name>")
     def static_file(name):
+        # The gzipped copy a release carries, for a browser that takes it.
+        if accepts_gzip(request.headers.get("Accept-Encoding")) \
+                and not name.endswith(".gz"):
+            target = os.path.normpath(os.path.join(STATIC, name + ".gz"))
+            if target.startswith(STATIC) and os.path.isfile(target):
+                response = send_from_directory(STATIC, name + ".gz")
+                plain = send_from_directory(STATIC, name)
+                response.headers["Content-Type"] = plain.headers[
+                    "Content-Type"]
+                response.headers["Content-Encoding"] = "gzip"
+                response.headers["Vary"] = "Accept-Encoding"
+                return response
         return send_from_directory(STATIC, name)
 
-    @app.route("/api/<path:rest>", methods=["GET", "POST", "PATCH"])
+    @app.route("/api/<path:rest>", methods=["GET", "POST", "PATCH", "DELETE"])
     def api_route(rest):
         # Parsed whatever the Content-Type says, as the standard-library
         # server does, so the two cannot disagree about a request.
@@ -56,6 +78,15 @@ def create_app(manager, device=None, auth=None):
         header = request.headers.get("Authorization", "")
         token = (header[7:].strip() if header.lower().startswith("bearer ")
                  else request.headers.get("X-Trstenko-Token", ""))
+        opened = api.stream("/api/" + rest, token)
+        if opened is not None:
+            status, payload = opened
+            if status != 200:
+                return Response(json.dumps(payload), status=status,
+                                mimetype="application/json")
+            return Response(payload, mimetype="text/event-stream",
+                            headers={"Cache-Control": "no-store",
+                                     "X-Accel-Buffering": "no"})
         status, payload = api.dispatch(request.method, "/api/" + rest, body,
                                        token, request.args.to_dict())
         return Response(json.dumps(payload), status=status,

@@ -26,6 +26,11 @@ the page shows that saved list. "Scan again" drops the hotspot for a moment.
 time setup starts, which EN 18031 requires. It is shown on the device's screen
 and nowhere else: not in the log, not in the page's API.
 
+**The address and the PIN, on request.** The page asks for the pairing PIN on
+every new visit, and only the screen may show it. A long press of a volume
+button puts the device's address and its PIN on the screen for half a minute.
+Looking the address up is an `nmcli` call, so that too goes through the worker.
+
 **Passwords are not kept here.** The home Wi-Fi password goes from the page to
 `nmcli`, which stores it in NetworkManager's own files. It is never logged and
 never sent back.
@@ -57,6 +62,9 @@ HOME_URL = "http://trstenko.local"
 SETUP_TIMEOUT = 15 * 60.0
 # How long the address stays on the screen after joining.
 JOINED_HOLD = 120.0
+# How long the address and the PIN stay up after a long press. Long enough to
+# walk to a laptop and type six digits.
+INFO_HOLD = 30.0
 JOIN_TIMEOUT = 30.0
 COMMAND_TIMEOUT = 20.0
 
@@ -275,6 +283,7 @@ class NetSetup:
         self.address = None
         self._deadline = 0.0
         self._scanning = False
+        self._info_until = 0.0
 
         self._jobs = queue.Queue(maxsize=8)
         self._stop = threading.Event()
@@ -331,6 +340,8 @@ class NetSetup:
             elif what == "close":
                 net.stop_hotspot()
                 self._tell("closed")
+            elif what == "address":
+                self._tell("address", address=net.address())
         except NetworkError as exc:
             self._tell("failed", during=what, error=str(exc))
         except Exception:
@@ -428,6 +439,17 @@ class NetSetup:
         self.on_log("setup: joining a network")
         return self.status()
 
+    def show_info(self):
+        """Put the address and the PIN on the screen for a while. During setup
+        the card already shows the PIN, so there is nothing to do."""
+        if self.state != OFF:
+            return False
+        try:
+            self._queue("address")
+        except ev.CommandError:
+            return False
+        return True
+
     def stop(self):
         """Give up: hotspot down, back to the face."""
         if self.state in (STARTING, WAITING):
@@ -469,12 +491,21 @@ class NetSetup:
             self.state = WAITING
             self._deadline = now + SETUP_TIMEOUT
             self.on_log("setup: the join failed")
+        elif what == "address":
+            if self.state == OFF:
+                self.address = data.get("address")
+                self._info_until = now + INFO_HOLD
         elif what == "failed":
             self._scanning = False
             self.on_log("setup: %s failed: %s" % (data.get("during"),
                                                   data.get("error")))
             if data.get("during") == "scan" and self.state == WAITING:
                 self.error = data.get("error") or ""
+            elif data.get("during") == "address":
+                # No address to show, but the PIN is still worth showing.
+                if self.state == OFF:
+                    self.address = None
+                    self._info_until = now + INFO_HOLD
             elif data.get("during") != "check":
                 self._off()
 
@@ -501,6 +532,9 @@ class NetSetup:
         if self.state == JOINED:
             return {"mode": "online", "url": HOME_URL,
                     "address": self.address, "pin": self._pin()}
+        if self.mono() < self._info_until:
+            return {"mode": "info", "url": HOME_URL,
+                    "address": self.address, "pin": self._pin()}
         return None
 
     def status(self):
@@ -525,6 +559,7 @@ def wire(device, network, serial="", pin=None, new_pin=None, check=True):
     device.add_step("netsetup", setup.tick, every=1.0)
     device.add_closer("netsetup", setup.close, first=True)
     device.on_setup = lambda: setup.begin(reset_pin=True)
+    device.on_info = setup.show_info
     def card():
         shown = setup.card()
         if shown is not None:

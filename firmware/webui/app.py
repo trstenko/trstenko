@@ -25,6 +25,14 @@ def create_app(manager, device=None, auth=None):
 
     app.config["MAX_CONTENT_LENGTH"] = MAX_BODY
 
+    @app.before_request
+    def captive():
+        # A phone's "am I online" check, during setup: send it to the page.
+        target = api.captive(request.headers.get("Host"))
+        if target is not None and request.method in ("GET", "HEAD"):
+            return Response(status=302, headers={"Location": target,
+                                                 "Cache-Control": "no-store"})
+
     @app.after_request
     def secure(response):
         # On everything, including the static page and the error pages.

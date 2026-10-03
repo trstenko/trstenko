@@ -384,3 +384,117 @@ def scenario_factory_reset(report, root):
                  os.path.exists(os.path.join(plain.data, DB_NAME))
                  and plain.hal.system.rebooted == 0)
     plain.close()
+
+
+def scenario_info_card(report, root):
+    """A long press of a volume button shows the address and the PIN."""
+    r = SetupRig(root, "infocard")
+    try:
+        setup, net, hal = r.setup, r.net, r.rig.hal
+        r.rig.step(4.0)
+        net.joined = "Home"
+        volume = hal.speaker.get_volume()
+
+        def long_press(name):
+            hal.press(name)
+            r.rig.step(1.0)
+            hal.release(name)
+            r.rig.step(0.1)
+
+        long_press(VOL_UP)
+        ok = r.settle(lambda: setup.card() is not None)
+        card = setup.card() or {}
+        report.check("a long press of a volume button shows the address and "
+                     "the PIN", ok and card.get("mode") == "info"
+                     and card["address"] == "192.168.1.57"
+                     and card["pin"] == r.auth.pin
+                     and card["url"] == "http://trstenko.local", str(card))
+        report.check("it does not change the volume, start setup or make a "
+                     "new PIN", abs(hal.speaker.get_volume() - volume) < 1e-9
+                     and setup.state == netsetup.OFF and net.hotspot is None
+                     and r.call("GET", "/api/v1/setup")[0] == 200)
+        r.rig.step(1.0)
+        report.check("the card is on the screen",
+                     _has(hal.panel.frame, setupcard.PAPER))
+        report.check("the PIN is in no log line",
+                     not any(r.auth.pin in line for line in r.rig.logs))
+        r.rig.step(netsetup.INFO_HOLD + 1.0)
+        report.check("half a minute later the face is back",
+                     setup.card() is None)
+
+        net.joined = None
+        long_press(VOL_DOWN)
+        r.settle(lambda: setup.card() is not None)
+        card = setup.card() or {}
+        image = setupcard.draw(dict(card))
+        report.check("off the Wi-Fi it still shows the PIN, and says so",
+                     card.get("mode") == "info" and card["address"] is None
+                     and image.size == (320, 240), str(card))
+    finally:
+        r.close()
+
+
+def scenario_captive_portal(report, root):
+    """During setup, a phone's "am I online" check is sent to the page."""
+    import http.client
+
+    from firmware.webui import captive, serve
+
+    cases = (
+        ("connectivitycheck.gstatic.com", "waiting", captive.PORTAL),
+        ("captive.apple.com:80", "starting", captive.PORTAL),
+        ("www.msftconnecttest.com", "joining", captive.PORTAL),
+        ("10.42.0.1", "waiting", None),
+        ("TRSTENKO.local:80", "waiting", None),
+        ("", "waiting", None),
+        ("connectivitycheck.gstatic.com", "off", None),
+        ("example.com", "joined", None),
+    )
+    wrong = [(h, s) for h, s, want in cases if captive.redirect(h, s) != want]
+    report.check("only another site's address, and only while the hotspot is "
+                 "up, is redirected", not wrong, str(wrong))
+
+    r = SetupRig(root, "captive", saved=False)
+    from .headless import Pump
+    server = serve(r.api, host="127.0.0.1", port=0)
+    port = server.server_address[1]
+
+    def get(host, path="/generate_204", method="GET"):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.putrequest(method, path, skip_host=True)
+        conn.putheader("Host", host)
+        conn.endheaders()
+        response = conn.getresponse()
+        body = response.read()
+        got = (response.status, response.getheader("Location"), body,
+               response.getheader("Content-Security-Policy"))
+        conn.close()
+        return got
+
+    try:
+        r.settle(lambda: r.setup.state == netsetup.WAITING)
+        with Pump(r.device):
+            status, where, _, policy = get("connectivitycheck.gstatic.com")
+            report.check("on the hotspot, a phone's check gets a redirect to "
+                         "the setup page, with the security headers",
+                         status == 302 and where == "http://10.42.0.1/"
+                         and policy, "%s %s" % (status, where))
+            status, where, _, _ = get("captive.apple.com",
+                                      "/hotspot-detect.html", "HEAD")
+            report.check("a HEAD check too", status == 302
+                         and where == "http://10.42.0.1/")
+            status, _, body, _ = get("10.42.0.1", "/")
+            report.check("the page itself is served, not redirected",
+                         status == 200 and b"app.js" in body)
+            status, _, _, _ = get("10.42.0.1", "/api/v1/setup")
+            report.check("and its API still needs the token", status == 401)
+            r.setup.stop()
+            r.rig.step(0.2)
+            status, where, _, _ = get("connectivitycheck.gstatic.com")
+            report.check("once setup is over, nothing is redirected",
+                         status == 404 and where is None,
+                         "%s %s" % (status, where))
+    finally:
+        server.shutdown()
+        server.server_close()
+        r.close()

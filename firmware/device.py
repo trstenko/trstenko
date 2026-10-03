@@ -106,6 +106,8 @@ class Device:
         self.pipeline = pipeline
         self.updater = updater
         self.on_setup = on_setup or (lambda: None)
+        # A long press of a volume button: show where the page is and its PIN.
+        self.on_info = lambda: None
         self._has_callback = on_log is not None
         self.on_log = on_log or (lambda line: None)
         self._closers = []
@@ -643,6 +645,12 @@ class Device:
                 self.hal.system.reboot()
             return
 
+        if event.action == LONG and event.name in (VOL_DOWN, VOL_UP):
+            # The page asks for a PIN and only the screen may show it. This is
+            # how its owner asks to see it; it does not change the volume.
+            self.log("address and PIN requested")
+            self.on_info()
+            return
         if event.action != SHORT:
             return
         if event.name in (VOL_DOWN, VOL_UP):

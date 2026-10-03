@@ -121,7 +121,9 @@ def run(device, notifier):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--port", type=int, default=8080)
+    # Port 80, so the address on the screen needs no number after it and the
+    # setup hotspot's captive portal can answer a phone (webui/captive.py).
+    ap.add_argument("--port", type=int, default=80)
     ap.add_argument("--no-web", action="store_true")
     args = ap.parse_args(argv)
 
@@ -137,10 +139,9 @@ def main(argv=None):
     device, updater = build(hal, notifier=notifier)
 
     # The page is reachable by anyone on the same Wi-Fi, so it is locked. The
-    # PIN is on the setup card, next to the QR code. A device already on the
-    # home Wi-Fi shows no card, so the journal carries it too.
-    # TODO decide where an owner on the home Wi-Fi reads the PIN without
-    # starting setup again (plan 07 suggests a button; none is free yet).
+    # PIN is on the setup card, next to the QR code, and a long press of a
+    # volume button shows it again (netsetup.py). The journal carries it too,
+    # for whoever is debugging a device over SSH.
     auth = Auth(updater.config.data_root,
                 log=logging.getLogger("trstenko.auth").info)
     log.info("pairing PIN: %s", auth.pin)

@@ -37,9 +37,11 @@ SMALL_SIZE = 15
 # the rest of the device's Slovenian.
 WORDS = {
     "en": {"wifi": "Wi-Fi", "password": "Password", "joining": "Connecting to",
-           "online": "Online", "starting": "Starting setup"},
+           "online": "Online", "starting": "Starting setup",
+           "info": "Open in a browser", "offline": "Not on Wi-Fi"},
     "sl": {"wifi": "Wi-Fi", "password": "Geslo", "joining": "Povezujem z",
-           "online": "Povezano", "starting": "Začenjam nastavitev"},
+           "online": "Povezano", "starting": "Začenjam nastavitev",
+           "info": "Odprite v brskalniku", "offline": "Ni povezave z Wi-Fi"},
 }
 
 _warned = False
@@ -109,8 +111,12 @@ def draw(card, matrix=qr_matrix):
     elif mode == "joining":
         _centre(pen, 86, words["joining"], small, DIM)
         _centre(pen, 112, card["ssid"][:24], big)
-    elif mode == "online":
-        _centre(pen, 46, words["online"], big, TEAL)
+    elif mode == "info" and not card.get("address"):
+        _centre(pen, 80, words["offline"], big)
+        _centre(pen, 150, "PIN %s" % card["pin"], big, TEAL)
+    elif mode in ("online", "info"):
+        _centre(pen, 46, words[mode], big if mode == "online" else small,
+                TEAL if mode == "online" else DIM)
         _centre(pen, 92, card["url"].replace("http://", ""), big)
         if card.get("address"):
             _centre(pen, 122, card["address"], small, DIM)

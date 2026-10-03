@@ -25,6 +25,7 @@ firmware on it -- see `auth.py`.
 
 from firmware.updates import version as version_mod
 
+from . import captive
 from .v1 import V1Api
 
 NOT_FOUND = (404, {"error": "no such endpoint"})
@@ -79,6 +80,15 @@ class UpdateApi:
         if method != "POST":
             return BAD_METHOD
         return action(body)
+
+    def captive(self, host_header):
+        """Where a request for `host_header` should be sent instead, or None.
+        Only ever a redirect while the setup hotspot is up (`captive.py`).
+        Reads one attribute of the device and changes nothing."""
+        setup = getattr(self.device, "netsetup", None)
+        if setup is None:
+            return None
+        return captive.redirect(host_header, setup.state)
 
     def stream(self, path, token=None):
         """`GET /api/v1/events`, which is the one answer that is not a dict.

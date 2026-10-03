@@ -36,6 +36,8 @@ class _Handler(BaseHTTPRequestHandler):
         pass  # the device's journal is not a web access log
 
     def do_GET(self):
+        if self._captive():
+            return
         path, _, query = self.path.partition("?")
         if path.startswith("/api/"):
             opened = self.api.stream(path, self._token())
@@ -45,6 +47,26 @@ class _Handler(BaseHTTPRequestHandler):
             self._api("GET", path, {}, dict(parse_qsl(query)))
             return
         self._static(path)
+
+    def do_HEAD(self):
+        # Only the captive check uses HEAD; the page itself never does.
+        if not self._captive():
+            self._send(405, b"", "text/plain")
+
+    def _captive(self):
+        """Send a phone's "am I online" check to the setup page. True if the
+        request has been answered."""
+        target = self.api.captive(self.headers.get("Host"))
+        if target is None:
+            return False
+        self.send_response(302)
+        self.send_header("Location", target)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        for name, value in SECURITY_HEADERS.items():
+            self.send_header(name, value)
+        self.end_headers()
+        return True
 
     def _token(self):
         """`Authorization: Bearer <token>`, as the page sends it."""

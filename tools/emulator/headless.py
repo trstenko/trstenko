@@ -193,6 +193,97 @@ def scenario_mute(report, root):
                  rig.device.face.current)
 
 
+def scenario_idle_acts(report, root):
+    """The idle face does something now and then, and gets out of the way."""
+    import random
+
+    from firmware import device as device_mod
+    from firmware.face import states as state_defs
+    from firmware.face.renderer import FaceRenderer
+
+    acts = set(state_defs.IDLE_ACTS)
+    rig = Rig(os.path.join(root, "idle-acts"))
+    rig.device._rng = random.Random(3)
+    rig.step(4.0)
+    seen = set()
+    for _ in range(int(device_mod.IDLE_ACT_EVERY[0] - 10)):
+        rig.step(1.0)
+        seen.add(rig.device.face.current)
+    report.check("nothing but the idle face for the first five minutes",
+                 seen == {"face_idle"}, str(sorted(seen)))
+
+    played = []
+    was_idle = True
+    for _ in range(int(device_mod.IDLE_ACT_EVERY[1] * 6 * 4)):
+        rig.step(0.25)
+        current = rig.device.face.current
+        if current in acts and (not played or played[-1] != current
+                                or was_idle):
+            played.append(current)
+        was_idle = current == "face_idle"
+    report.check("an act plays every 5 to 15 minutes",
+                 4 <= len(played) <= 18, str(played))
+    report.check("never the same act twice in a row",
+                 all(a != b for a, b in zip(played, played[1:])), str(played))
+    report.check("the device ends up back on the idle face",
+                 _until(rig, lambda: rig.device.face.current == "face_idle",
+                        12),
+                 rig.device.face.current)
+
+    # Something real replaces an act at once.
+    rig.device._next_act = rig.t
+    rig.step(0.5)
+    report.check("an act can be started on demand",
+                 rig.device.face.current in acts, rig.device.face.current)
+    report.check("the page is told it is the idle face",
+                 rig.device.shown_face() == "face_idle"
+                 and rig.device.summary()["face"] == "face_idle")
+    rig.pipeline.trigger()
+    rig.step(0.3)
+    report.check("the wake word interrupts an act",
+                 rig.device.face.current == "face_listening",
+                 rig.device.face.current)
+
+    # Every frame of every act stays inside what the panel is sent.
+    states = state_defs.build()
+    renderer = FaceRenderer(ssaa=1)
+    left, top, right, bottom = state_defs.DIRTY_RECT
+    outside = []
+    for name in state_defs.IDLE_ACTS:
+        state = states[name]
+        first, last = state.sample(0.0), state.sample(state.duration)
+        idle = {s["name"]: s for s in states["face_idle"].sample(0.0)}
+        for pose in (first, last):
+            for shape in pose:
+                rest = idle.get(shape["name"])
+                if rest is None:
+                    if shape["opacity"] > 0.5:
+                        outside.append("%s shows %s at its ends"
+                                       % (name, shape["name"]))
+                elif any(abs(shape[k] - rest[k]) > 0.01
+                         for k in ("x", "y", "sx", "sy", "rot", "opacity")):
+                    outside.append("%s does not start and end on idle" % name)
+        for i in range(int(state.duration * 30) + 1):
+            _, box = renderer.render(state.sample(i / 30.0))
+            if box and (box[0] < left or box[1] < top
+                        or box[2] > right or box[3] > bottom):
+                outside.append("%s at %.2fs: %s" % (name, i / 30.0, box))
+                break
+    report.check("every act starts and ends on the idle pose, inside the "
+                 "blit region", not outside, "; ".join(sorted(set(outside))))
+    report.check("every act hands back to idle",
+                 all(state_defs.FOLLOW.get(n) == "face_idle"
+                     and not states[n].loop for n in state_defs.IDLE_ACTS))
+
+
+def _until(rig, predicate, seconds):
+    for _ in range(int(seconds * 10)):
+        if predicate():
+            return True
+        rig.step(0.1)
+    return predicate()
+
+
 def scenario_failed_turn(report, root):
     rig = Rig(os.path.join(root, "fail"))
     rig.step(4.0)
@@ -3780,6 +3871,7 @@ def main(argv=None):
         ("boot and a full turn", scenario_boot_and_talk),
         ("the mute switch", scenario_mute),
         ("a turn that fails", scenario_failed_turn),
+        ("the idle face does something now and then", scenario_idle_acts),
         ("buttons and the setup gesture", scenario_setup_gesture),
         ("setup mode: hotspot, card and joining Wi-Fi",
          setup_scenarios.scenario_setup_mode),

@@ -372,12 +372,19 @@ COLOR_OVERRIDE = {
 ORDER = ["face_idle", "face_listening", "face_thinking", "face_talking",
          "face_wake", "face_muted", "face_boot", "face_error"]
 
+# What the idle face does now and then, built in `acts.py`. Each plays once
+# and hands back to face_idle. The device picks one every several minutes.
+IDLE_ACTS = ("face_idle_look", "face_idle_curious", "face_idle_sleepy",
+             "face_idle_yawn", "face_idle_happy", "face_idle_wink",
+             "face_idle_doze", "face_idle_roll", "face_idle_perk")
+
 # Where a one-shot goes when it finishes. The controller follows these on its
 # own, so the interaction loop never has to time the handover.
 FOLLOW = {
     "face_boot": "face_idle",
     "face_wake": "face_listening",
 }
+FOLLOW.update({name: "face_idle" for name in IDLE_ACTS})
 
 # Most transitions take the default. These do not: wake already ends on the
 # listening pose, so a long blend there just smears an arrival that has
@@ -419,6 +426,14 @@ def build(data_path=None):
                 states[name] = fallback[name]
     except (OSError, ValueError, KeyError):
         states = _fallback_states()
+
+    # Imported here: acts.py takes its geometry from this module.
+    from . import acts
+    for name in IDLE_ACTS:
+        duration, shapes, tracks = acts.IDLE_BUILDERS[name]()
+        states[name] = State(
+            name, duration, [Shape(*spec[:6]) for spec in shapes], tracks,
+            loop=False, source="code")
 
     for name, state in states.items():
         builder = CODE_TRACKS.get(name)

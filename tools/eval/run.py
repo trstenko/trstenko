@@ -195,9 +195,11 @@ def main(argv=None):
 
     today = datetime.date.today().isoformat()
     os.makedirs(args.out, exist_ok=True)
-    name = "%s-%s-%s.md" % (today, args.provider,
-                            "".join(c if c.isalnum() or c in ".-" else "-"
-                                    for c in model))
+    which = os.path.splitext(os.path.basename(args.cases))[0]
+    which = which[len("cases_"):] if which.startswith("cases_") else which
+    name = "%s-%s-%s-%s.md" % (today, args.provider,
+                               "".join(c if c.isalnum() or c in ".-" else "-"
+                                       for c in model), which)
     path = os.path.join(args.out, name)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(score_mod.report(args.provider, model, rows, when=today))

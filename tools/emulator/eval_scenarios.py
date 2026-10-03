@@ -44,6 +44,21 @@ def scenario_eval_scoring(report, root):
                  "and says which", _failed(checks) == ["arguments"]
                  and "2026-10-02T06:00" in [d for n, _, d in checks
                                             if n == "arguments"][0])
+    either = {"say": "wake me in an hour and a half",
+              "expect_tool": ["set_timer", "set_reminder"],
+              "expect_args": [{"seconds": 5400},
+                              {"when": "2026-10-02T16:40"}]}
+    report.check("arguments given as alternatives pass on any one, and fail "
+                 "on none",
+                 score.passed(score.score(either, score.Outcome(
+                     calls=[("set_timer", {"seconds": 5400})], reply="Set.")))
+                 and score.passed(score.score(either, score.Outcome(
+                     calls=[("set_reminder", {"when": "2026-10-02T16:40:00",
+                                              "text": "Wake up."})],
+                     reply="Set.")))
+                 and _failed(score.score(either, score.Outcome(
+                     calls=[("set_timer", {"seconds": 3600})], reply="Set.")))
+                 == ["arguments"])
     twice = score.Outcome(calls=good.calls * 2, reply="Done.")
     report.check("the same tool called twice fails",
                  _failed(score.score(REMINDER, twice)) == ["called once"])

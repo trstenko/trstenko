@@ -16,7 +16,9 @@ What a case may expect:
 - `also_ok`: tools that may be called as well without it counting as an extra
   (`list_reminders` before a `cancel_reminder`, say).
 - `expect_args`: arguments of the expected tool's first call. `"key"` must be
-  equal; `"key~"` must contain the text, whatever the case of the letters.
+  equal; `"key~"` must contain the text, whatever the case of the letters. A
+  list of such objects means any one of them is right ("in an hour and a half"
+  is a 5400-second timer or a reminder at a time).
 - `max_words`: the most words the whole spoken reply may have.
 - `expect_question`: true if the reply has to end by asking something.
 - `say`/`say_not` checks: `reply_matches` and `reply_not` are regular
@@ -101,6 +103,19 @@ def _same(got, want):
     return got == want
 
 
+def _wrong_args(args, expected):
+    """What is wrong with `args` against one expected set, as sentences."""
+    wrong = []
+    for key, value in expected.items():
+        if key.endswith("~"):
+            got = args.get(key[:-1])
+            if str(value).lower() not in str(got or "").lower():
+                wrong.append("%s=%r lacks %r" % (key[:-1], got, value))
+        elif not _same(args.get(key), value):
+            wrong.append("%s=%r, wanted %r" % (key, args.get(key), value))
+    return wrong
+
+
 def score(case, outcome):
     """[(check, passed, detail)] for one case. Only the checks the case asks
     for are in the list, so a report can count them."""
@@ -140,16 +155,13 @@ def score(case, outcome):
 
         if case.get("expect_args") and wanted & set(names):
             args = next(a for n, a in outcome.calls if n in wanted) or {}
-            wrong = []
-            for key, value in case["expect_args"].items():
-                if key.endswith("~"):
-                    got = args.get(key[:-1])
-                    if str(value).lower() not in str(got or "").lower():
-                        wrong.append("%s=%r lacks %r" % (key[:-1], got, value))
-                elif not _same(args.get(key), value):
-                    wrong.append("%s=%r, wanted %r" % (key, args.get(key),
-                                                       value))
-            check("arguments", not wrong, "; ".join(wrong))
+            choices = case["expect_args"]
+            if isinstance(choices, dict):
+                choices = [choices]
+            problems = [_wrong_args(args, choice) for choice in choices]
+            ok = any(not wrong for wrong in problems)
+            check("arguments", ok, " or ".join("; ".join(w)
+                                               for w in problems))
 
     if "max_words" in case:
         count = words(outcome.reply)

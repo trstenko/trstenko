@@ -3659,11 +3659,36 @@ def scenario_web_servers(report, root):
     rig.rig.close()
 
 
+def scenario_soak_smoke(report, root):
+    """Twelve simulated minutes of the soak test, so the test itself keeps
+    working. The real one is `--soak 24h`."""
+    from . import soak
+
+    soak.run(0.2, report, root, say=lambda line: None)
+
+
 def main(argv=None):
     from . import assistant_scenarios as asst
 
+    args = list(sys.argv[1:] if argv is None else argv)
     root = tempfile.mkdtemp(prefix="trstenko-headless-")
     report = Report()
+    if "--soak" in args:
+        # A simulated day (or `--soak 2h`), on its own: see soak.py.
+        from . import soak
+
+        at = args.index("--soak")
+        hours = (soak.parse_duration(args[at + 1]) if len(args) > at + 1
+                 else 24.0)
+        print("== soak: %g simulated hours" % hours)
+        try:
+            soak.run(hours, report, root)
+        finally:
+            for rig in list(SchedRig.open_rigs):
+                rig.close()
+            asst.close_all()
+            shutil.rmtree(root, ignore_errors=True)
+        return report.done()
     scenarios = [
         ("the provider table", asst.scenario_tables),
         ("what things cost", asst.scenario_prices),
@@ -3756,6 +3781,7 @@ def main(argv=None):
         ("the model evaluation: scoring", eval_scenarios.scenario_eval_scoring),
         ("the model evaluation: the runner, on the fake provider",
          eval_scenarios.scenario_eval_runner),
+        ("the soak test, briefly", scenario_soak_smoke),
         ("an optional update", scenario_optional_update),
         ("an urgent update", scenario_urgent_update),
         ("an urgent update, start to finish", scenario_urgent_end_to_end),

@@ -35,6 +35,7 @@ from firmware.updates import UpdateConfig, UpdateManager
 from firmware.webui import Auth, UpdateApi
 
 from . import audio as audio_mod
+from . import setup_scenarios
 from .clock import FakeClock
 from .fake_releases import FakeReleases
 from .hal import EmulatedHAL
@@ -1039,7 +1040,7 @@ def scenario_events(report, root):
                   "TurnFailed", "SpeakingStarted", "SpeakingDone", "TtsDied",
                   "SpeakingLevel", "Due", "ClockSynced", "NetworkChanged",
                   "LowVoltage", "Hot", "Shutdown",
-                  "WorkerDied"} == set(ev.KINDS))
+                  "WorkerDied", "NetSetup"} == set(ev.KINDS))
 
 
 def scenario_fake_clock(report, root):
@@ -3739,6 +3740,11 @@ def main(argv=None):
         ("the mute switch", scenario_mute),
         ("a turn that fails", scenario_failed_turn),
         ("buttons and the setup gesture", scenario_setup_gesture),
+        ("setup mode: hotspot, card and joining Wi-Fi",
+         setup_scenarios.scenario_setup_mode),
+        ("setup mode on a new device", setup_scenarios.scenario_setup_new_device),
+        ("setup mode: the scan list, the code and the card",
+         setup_scenarios.scenario_setup_parts),
         ("an optional update", scenario_optional_update),
         ("an urgent update", scenario_urgent_update),
         ("an urgent update, start to finish", scenario_urgent_end_to_end),

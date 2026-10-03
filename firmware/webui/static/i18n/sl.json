@@ -295,7 +295,6 @@
   "update_pill": "Posodobitev na voljo",
   "usage_history": "Zgodovina porabe",
   "usage_history_hint": "Omejitve začnejo šteti od začetka",
-  "wifi_later": "Povezava z domačim Wi-Fi pride v poznejši posodobitvi.",
   "delete_title_memories": "Izbrišem vse spomine?",
   "delete_body_memories": "Trstenko pozabi vse, kar si je moral zapomniti. Tega ni mogoče razveljaviti.",
   "delete_action_memories": "Izbriši spomine",
@@ -304,5 +303,19 @@
   "delete_action_log": "Izbriši dnevnik",
   "delete_title_usage": "Izbrišem zgodovino porabe?",
   "delete_body_usage": "Stroški po dnevih se odstranijo in omejitve začnejo šteti od začetka. Tega ni mogoče razveljaviti.",
-  "delete_action_usage": "Izbriši zgodovino porabe"
+  "delete_action_usage": "Izbriši zgodovino porabe",
+  "wifi_title": "Povežite se z Wi-Fi",
+  "wifi_help": "Trstenko je za zdaj na svojem Wi-Fi. Izberite domače omrežje, da bo lahko dosegel internet.",
+  "wifi_network": "Omrežje",
+  "wifi_password": "Geslo za Wi-Fi",
+  "wifi_open": "Odprto omrežje, brez gesla",
+  "wifi_join": "Poveži",
+  "wifi_scan": "Poišči znova",
+  "wifi_scanning": "Iščem",
+  "wifi_starting": "Trstenko išče omrežja.",
+  "wifi_none": "Ni najdenih omrežij. Trstenka približajte usmerjevalniku in poiščite znova.",
+  "wifi_joining": "Povezujem z {ssid}",
+  "wifi_joining_help": "Trstenko je zapustil svoj Wi-Fi, da se poveže z omrežjem {ssid}. Tudi ta telefon preklopite nazaj na {ssid}, nato znova odprite stran in vnesite PIN s Trstenkovega zaslona.",
+  "wifi_open_home": "Odpri {url}",
+  "wifi_address_hint": "Če se ta naslov ne odpre, uporabite številke na Trstenkovem zaslonu. Če povezava ne uspe, se Trstenkov Wi-Fi vrne in ta stran pove, zakaj."
 }

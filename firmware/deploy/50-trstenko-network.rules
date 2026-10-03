@@ -1,0 +1,23 @@
+// Lets the trstenko service manage Wi-Fi connections through NetworkManager,
+// and nothing else. Setup mode (firmware/netsetup.py) needs it to raise the
+// hotspot and to join the owner's network; the service is otherwise sandboxed.
+//
+// Install:  sudo cp 50-trstenko-network.rules /etc/polkit-1/rules.d/
+//
+// Only needed once the unit runs as its own user ("trstenko" below). While it
+// runs as root, NetworkManager allows all of this already.
+//
+// TODO on the board: confirm the user the unit runs as, and that these
+// actions are enough for `nmcli device wifi hotspot` and `connect`.
+polkit.addRule(function (action, subject) {
+    if (subject.user !== "trstenko") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.id === "org.freedesktop.NetworkManager.network-control" ||
+        action.id === "org.freedesktop.NetworkManager.settings.modify.system" ||
+        action.id === "org.freedesktop.NetworkManager.wifi.share.protected" ||
+        action.id === "org.freedesktop.NetworkManager.wifi.scan") {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

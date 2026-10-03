@@ -54,6 +54,8 @@ HOT = "Hot"                             # data: the temperature in degrees C
 SHUTDOWN = "Shutdown"
 # Posted from the `finally` of a worker thread, so main can restart it.
 WORKER_DIED = "WorkerDied"              # data: the worker's name
+# The setup worker finished a slow step (firmware/netsetup.py).
+NET_SETUP = "NetSetup"                  # data: what happened, and its result
 
 KINDS = frozenset((
     WAKE_WORD, SPEECH_STARTED, SPEECH_ENDED, MIC_LOST, MIC_BACK,
@@ -61,6 +63,7 @@ KINDS = frozenset((
     SPEAKING_STARTED, SPEAKING_DONE, TTS_DIED, SPEAKING_LEVEL,
     DUE,
     CLOCK_SYNCED, NETWORK_CHANGED, LOW_VOLTAGE, HOT, SHUTDOWN, WORKER_DIED,
+    NET_SETUP,
 ))
 
 # How long a web handler waits for the main thread before telling the page the

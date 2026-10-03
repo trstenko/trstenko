@@ -1,5 +1,6 @@
-// First run: a provider and its key, a test the device answers aloud, then a
-// name and a language. (Joining home Wi-Fi comes with the board, plan 07.)
+// First run: join the home Wi-Fi (only while the device is in setup mode, on
+// its own hotspot), then a provider and its key with a test the device answers
+// aloud, then a name and a language.
 
 import {api, clear, h, loadStrings, t, toast} from "/js/core.js";
 import {createFace, facePanel} from "/js/face.js";
@@ -7,17 +8,20 @@ import {busy, field, input, result, save, seg} from "/js/ui.js";
 import {hostBox, waitForTest} from "/js/views/assistant.js";
 
 export async function render(root) {
-  // key -> hello (the test is running) -> passed -> name -> done
+  // wifi -> joining -> key -> hello (the test is running) -> passed -> name -> done
   let step = "key";
+  let wifi = null;          // the device's setup status, while it is in setup mode
+  let picked = "";
+  let poll = null;
   let problem = "";
   const face = createFace(t("face_label"));
   const panel = facePanel(face, "setup");
-  const bars = [h("span", {class: "on"}), h("span"), h("span")];
+  const barBox = h("div", {class: "steps", "aria-hidden": "true"});
   const stepLabel = h("p", {class: "label"});
   const body = h("div", {class: "stack", style: "gap:16px"});
   clear(root).append(
     h("div", {class: "stack gap-m", style: "padding-top:8px"},
-      h("div", {class: "steps", "aria-hidden": "true"}, bars), stepLabel),
+      barBox, stepLabel),
     panel, body);
   face.start();
 
@@ -27,6 +31,12 @@ export async function render(root) {
     body.append(h("p", {class: "c-danger"}, keys.data.error || settings.data.error));
     return () => face.stop();
   }
+  const net = await api("GET", "/api/v1/setup");
+  if (net.ok && ["starting", "waiting", "joining"].includes(net.data.state)) {
+    wifi = net.data;
+    step = wifi.state === "joining" ? "joining" : "wifi";
+  }
+  const withWifi = !!wifi;
   const infos = keys.data.providers;
   let chosen = settings.data.settings.assistant.provider;
   let status = keys.data;
@@ -34,18 +44,99 @@ export async function render(root) {
   const info = () => infos.find((p) => p.id === chosen) || infos[0];
 
   function draw() {
-    const n = step === "name" ? 2 : step === "done" ? 3 : 1;
-    bars.forEach((el, i) => el.classList.toggle("on", i < n));
-    stepLabel.textContent = t("step_of", {n, total: 3});
+    const onWifi = step === "wifi" || step === "joining";
+    const first = withWifi ? 1 : 0;
+    const n = onWifi ? 1 : first + (step === "name" ? 2 : step === "done" ? 3 : 1);
+    const total = 3 + first;
+    clear(barBox).append(...Array.from({length: total}, (_, i) => h("span", {class: i < n ? "on" : ""})));
+    stepLabel.textContent = t("step_of", {n, total});
     const big = ["hello", "passed", "done"].includes(step);
     panel.classList.toggle("big", big);
-    if (step === "key") face.sleep();
+    clearTimeout(poll);
+    if (step === "key" || onWifi) face.sleep();
     else face.set(step === "hello" ? "face_talking" : step === "done" ? "face_listening" : "face_idle",
       step === "hello" ? 0.5 : 0);
     clear(body);
-    if (n === 1) keyStep();
-    else if (n === 2) nameStep();
-    else doneStep();
+    if (step === "wifi") wifiStep();
+    else if (step === "joining") joiningStep();
+    else if (step === "name") nameStep();
+    else if (step === "done") doneStep();
+    else keyStep();
+  }
+
+  // The device is on its own hotspot and so is this phone. Pick the home
+  // network; the device leaves the hotspot to join it, and takes the page's
+  // connection with it.
+  function wifiStep() {
+    const nets = wifi.networks || [];
+    if (!nets.some((x) => x.ssid === picked)) picked = nets.length ? nets[0].ssid : "";
+    const chosen = () => nets.find((x) => x.ssid === picked) || {secure: true};
+    const password = input({id: "fr-wifi", type: "password", autocomplete: "off", spellcheck: "false", maxlength: "63"});
+    const passField = h("div", {class: "field", hidden: !chosen().secure},
+      h("label", {for: "fr-wifi"}, t("wifi_password")), password);
+    const list = h("fieldset", {class: "radio-list"}, h("legend", {class: "vh"}, t("wifi_network")),
+      nets.map((x) => h("label", {class: "radio-row"},
+        h("input", {type: "radio", name: "w", value: x.ssid, checked: x.ssid === picked}),
+        h("span", {class: "row-main"}, h("span", {class: "row-title"}, x.ssid),
+          x.secure ? null : h("span", {class: "row-sub"}, t("wifi_open"))),
+        h("span", {class: "muted small"}, x.signal + "%"))));
+    list.addEventListener("change", (event) => {
+      picked = event.target.value;
+      passField.hidden = !chosen().secure;
+    });
+    const join = h("button", {class: "btn btn-primary grow", type: "button"}, t("wifi_join"));
+    const again = h("button", {class: "btn grow", type: "button"}, wifi.scanning ? t("wifi_scanning") : t("wifi_scan"));
+    join.disabled = !nets.length || wifi.state !== "waiting";
+    again.disabled = wifi.scanning || wifi.state !== "waiting";
+    join.addEventListener("click", () => busy(join, async () => {
+      if (chosen().secure && password.value.length < 8) { password.focus(); return; }
+      const r = await api("POST", "/api/v1/setup/join", {ssid: picked, password: chosen().secure ? password.value : ""});
+      if (!r.ok) { wifi.error = r.data.error; draw(); return; }
+      wifi = r.data;
+      step = "joining";
+      draw();
+    }));
+    again.addEventListener("click", () => busy(again, async () => {
+      // The hotspot drops for a moment while the device looks around.
+      const r = await api("POST", "/api/v1/setup/scan");
+      if (r.ok) wifi = r.data;
+      draw();
+    }));
+    body.append(h("div", {class: "stack", style: "gap:4px"}, h("h1", {class: "title"}, t("wifi_title")),
+      h("p", {class: "muted"}, t("wifi_help"))),
+      nets.length ? list : h("p", {class: "muted"}, wifi.state === "starting" ? t("wifi_starting") : t("wifi_none")),
+      passField, wifi.error ? result("err", wifi.error) : "",
+      h("div", {class: "hstack gap-m"}, again, join),
+      h("div", {}, h("button", {class: "btn btn-quiet", type: "button",
+        onclick: () => { step = "key"; draw(); }}, t("skip_for_now"))));
+    if (wifi.state === "starting" || wifi.scanning) poll = setTimeout(refreshWifi, 1500);
+  }
+
+  function joiningStep() {
+    const ssid = wifi.joining || picked;
+    const url = wifi.home_url || "http://trstenko.local";
+    body.append(h("div", {class: "stack gap-s"}, h("h1", {class: "title"}, t("wifi_joining", {ssid})),
+      h("p", {class: "muted"}, t("wifi_joining_help", {ssid}))),
+      h("a", {class: "btn btn-primary btn-lg btn-block", href: url},
+        t("wifi_open_home", {url: url.replace("http://", "")})),
+      h("p", {class: "hint"}, t("wifi_address_hint")));
+    poll = setTimeout(refreshWifi, 3000);
+  }
+
+  // While it joins, the device is out of reach, and that is expected. If the
+  // join fails the hotspot comes back, the phone finds it again, and the page
+  // can say why.
+  async function refreshWifi() {
+    const r = await api("GET", "/api/v1/setup");
+    if (step !== "wifi" && step !== "joining") return;
+    if (r.ok) {
+      wifi = r.data;
+      if (wifi.state === "waiting" || wifi.state === "starting") step = "wifi";
+      else if (wifi.state !== "joining") step = "key";   // joined, and still in reach
+      draw();
+    } else {
+      poll = setTimeout(refreshWifi, 3000);
+    }
   }
 
   function keyStep() {
@@ -153,10 +244,9 @@ export async function render(root) {
       h("button", {class: "btn btn-primary btn-lg btn-block", type: "button", onclick: () => {
         location.hash = "#/home";
         location.reload();
-      }}, t("go_home")),
-      h("p", {class: "hint"}, t("wifi_later")));
+      }}, t("go_home")));
   }
 
   draw();
-  return () => face.stop();
+  return () => { face.stop(); clearTimeout(poll); };
 }

@@ -37,6 +37,8 @@ sudo /opt/trstenko/releases/0.0.0/venv/bin/pip install \
 echo '{"base": 1}' | sudo tee /opt/trstenko/base.json
 
 sudo cp firmware/deploy/*.service /etc/systemd/system/
+# Lets the service manage Wi-Fi for setup mode (firmware/netsetup.py).
+sudo cp firmware/deploy/50-trstenko-network.rules /etc/polkit-1/rules.d/
 sudo systemctl enable --now trstenko-bootcheck.service trstenko.service
 ```
 

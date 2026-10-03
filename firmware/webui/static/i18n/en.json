@@ -295,7 +295,6 @@
   "update_pill": "Update ready",
   "usage_history": "Usage history",
   "usage_history_hint": "Limits start counting from nothing",
-  "wifi_later": "Joining your home Wi-Fi comes in a later update.",
   "delete_title_memories": "Delete all memories?",
   "delete_body_memories": "Trstenko forgets everything it was told to remember. This can’t be undone.",
   "delete_action_memories": "Delete memories",
@@ -304,5 +303,19 @@
   "delete_action_log": "Delete the log",
   "delete_title_usage": "Delete the usage history?",
   "delete_body_usage": "The cost per day is removed and the limits start counting from nothing. This can’t be undone.",
-  "delete_action_usage": "Delete usage history"
+  "delete_action_usage": "Delete usage history",
+  "wifi_title": "Join your Wi-Fi",
+  "wifi_help": "Trstenko is on its own Wi-Fi for now. Pick your home network so it can reach the internet.",
+  "wifi_network": "Network",
+  "wifi_password": "Wi-Fi password",
+  "wifi_open": "Open network, no password",
+  "wifi_join": "Join",
+  "wifi_scan": "Scan again",
+  "wifi_scanning": "Scanning",
+  "wifi_starting": "Trstenko is looking for networks.",
+  "wifi_none": "No networks found. Move Trstenko closer to your router and scan again.",
+  "wifi_joining": "Joining {ssid}",
+  "wifi_joining_help": "Trstenko has left its own Wi-Fi to join {ssid}. Put this phone back on {ssid} too, then open the page again and enter the PIN from Trstenko’s screen.",
+  "wifi_open_home": "Open {url}",
+  "wifi_address_hint": "If that address does not open, use the numbers shown on Trstenko’s screen. If the join fails, Trstenko’s own Wi-Fi comes back and this page says why."
 }

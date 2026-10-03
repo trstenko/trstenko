@@ -8,6 +8,9 @@
     POST  /api/v1/reminders/{id}/cancel
     POST  /api/v1/reminders/{id}/snooze    {"minutes"?}
     POST  /api/v1/alert/stop               acknowledge whatever is going off
+    GET   /api/v1/setup                    setup mode: its state, the networks
+    POST  /api/v1/setup/scan               look for networks again
+    POST  /api/v1/setup/join               {"ssid", "password"?}
     GET   /api/v1/settings                 everything but secrets
     PATCH /api/v1/settings                 {"voice": {"volume": 0.4}}, validated
 
@@ -38,7 +41,7 @@ API_VERSION = 1
 # What a client can rely on being here. A new capability is added to this list
 # and never changes an old one, so an app can ask rather than guess.
 FEATURES = ("reminders", "settings", "memories", "keys", "usage", "privacy",
-            "live")
+            "live", "setup")
 
 STATUS = {ev.INVALID: 400, ev.NOT_FOUND: 404, ev.CONFLICT: 409,
           ev.UNAVAILABLE: 503}
@@ -125,6 +128,14 @@ class V1Api:
             # tomorrow, and a cancelled one does not.
             return self._only(method, "POST",
                               lambda: self._command("announce.ack"))
+        if parts == ["setup"]:
+            return self._only(method, "GET",
+                              lambda: self._command("setup.status"))
+        if parts == ["setup", "scan"]:
+            return self._only(method, "POST",
+                              lambda: self._command("setup.scan"))
+        if parts == ["setup", "join"]:
+            return self._only(method, "POST", lambda: self._setup_join(body))
         if parts == ["faces"]:
             return self._only(method, "GET", self._faces)
         if parts == ["live"]:
@@ -176,6 +187,12 @@ class V1Api:
                        for shape in state["shapes"]]
                 for name, state in states.items()}
         return 200, {"faces": self._face_shapes, "width": 320, "height": 240}
+
+    def _setup_join(self, body):
+        if not isinstance(body, dict):
+            return _bad("Send the network as a JSON object.")
+        return self._command("setup.join", {"ssid": body.get("ssid"),
+                                            "password": body.get("password")})
 
     def _memory_add(self, body):
         if not isinstance(body, dict):

@@ -125,6 +125,11 @@ class Device:
         self.error_until = 0.0
         self.error_text = ""
         self.setup_mode = False
+        # Setup mode (firmware/netsetup.py), and the picture it puts on the
+        # screen in place of the face: `_card()` returns an image or None.
+        self.netsetup = None
+        self._card = None
+        self._card_shown = None
         self.frames = 0
         self.ticks = 0
         self.draw_ms = 0.0
@@ -613,6 +618,7 @@ class Device:
         if event.name == SETUP_COMBO:
             self.setup_mode = True
             self.log("setup requested")
+            self.wake_screen(now)
             self.on_setup()
             return
 
@@ -709,7 +715,32 @@ class Device:
             return "face_boot"
         return "face_idle"
 
+    def set_card(self, fn):
+        """`fn()` returns a whole-screen image to show instead of the face, or
+        None for the face. Setup mode uses it for the QR code."""
+        self._card = fn
+
     def _draw_frame(self, now):
+        card = self._card() if self._card is not None else None
+        if card is not None:
+            # Somebody has to read it: the screen stays on while it is up.
+            self.wake_screen(now)
+            # The face carries on underneath, undrawn. A new device boots
+            # straight into this card, and `healthy()` must still see it leave
+            # `face_boot`, or a first release would be rolled back for it.
+            want = self._face_for(now)
+            if want != self.face.current:
+                self.face.set(want, now,
+                              state_defs.blend_time(self.face.current, want))
+            if card is not self._card_shown:
+                self._card_shown = card
+                whole = (0, 0, self.hal.panel.width, self.hal.panel.height)
+                self.hal.panel.push(card, whole)
+                # The face comes back over all of it, not over its own box.
+                self._stale = whole
+            self.frames += 1
+            return
+        self._card_shown = None
         if self.screen_off:
             return
         self._draw(now)

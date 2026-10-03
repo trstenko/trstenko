@@ -90,6 +90,9 @@ async function boot() {
     const k = await api("GET", "/api/v1/keys");
     const chosen = k.ok && (k.data.providers || []).find((p) => p.id === k.data.selected);
     if (chosen && chosen.needs_key && !k.data[chosen.id].set) location.hash = "#/setup";
+    // A device in setup mode has a Wi-Fi to be told about first.
+    const s = await api("GET", "/api/v1/setup");
+    if (s.ok && s.data.state !== "off" && s.data.state !== "joined") location.hash = "#/setup";
   }
   show();
 }

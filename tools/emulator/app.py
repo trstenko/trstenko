@@ -30,7 +30,7 @@ from tkinter import ttk
 
 from PIL import Image, ImageDraw, ImageTk
 
-from firmware import logs
+from firmware import logs, netsetup, product
 from firmware.device import Device
 from firmware.hal.base import POWER, VOL_DOWN, VOL_UP
 from firmware.scheduler.wiring import wire
@@ -44,6 +44,7 @@ from firmware.webui import Auth, UpdateApi, serve
 from . import audio as audio_mod
 from .fake_releases import FakeReleases
 from .hal import MB, EmulatedHAL
+from .network import FakeNetwork
 from .pipeline import ScriptedPipeline
 
 SCALE = 2
@@ -626,13 +627,23 @@ class Emulator(tk.Tk):
         running is reported as interrupted, as it would be on the board."""
         device = Device(
             self.hal, self.pipeline, self.updater, on_log=self.log,
-            on_setup=self._setup, db=self.db,
+            db=self.db,
             settings=settings_mod.Settings.load(
                 settings_mod.default_path(self.data_root)),
             secrets=secrets_mod.Secrets.load(
                 secrets_mod.default_path(self.data_root)))
         wire(device, synced=lambda: True)
         self._wire_assistant(device)
+        # Setup mode against a Wi-Fi that is not real: holding both volume
+        # buttons raises the "hotspot" and puts the card on the panel. The
+        # page's Wi-Fi step then works, and nothing touches this PC's network.
+        self.network = getattr(self, "network", None) or FakeNetwork()
+        netsetup.wire(device, self.network,
+                      serial=product.serial(self.data_root),
+                      pin=lambda: self.auth.pin,
+                      new_pin=lambda: self.log(
+                          "pairing PIN for the page: %s"
+                          % self.auth.reset_pin()))
         return device
 
     def _wire_assistant(self, device):
@@ -748,10 +759,6 @@ class Emulator(tk.Tk):
         self.releases.fail_download = self.drop.get()
         self.releases.broken_release = self.broken_release.get()
         self.releases.break_signature = self.tamper.get()
-
-    def _setup(self):
-        self.log("setup mode: the device would raise its hotspot and show a "
-                 "QR code (not built yet)")
 
     def _update_event(self, kind, payload):
         self.log("update: %s %s" % (kind, _brief(payload)))

@@ -24,7 +24,9 @@ much of it as exists so far:
    what came due while the device was off. Timers work at once; reminders
    wait for the clock to sync.
 6. Start the web server, which never blocks the loop.
-7. Tell systemd `READY=1`, then run.
+7. Setup mode's worker, which asks NetworkManager whether a home Wi-Fi is
+   saved. A device with none raises its hotspot and shows the setup card.
+8. Tell systemd `READY=1`, then run.
 
 The voice pipeline is not wired in yet (Phase 2). The device runs without one:
 it boots, shows a face, respects the mute switch and the buttons, and serves
@@ -46,7 +48,7 @@ import signal
 import sys
 import threading
 
-from . import events, logs, sdnotify
+from . import events, logs, netsetup, product, sdnotify
 from .device import Device
 from .hal import open_hal
 from .storage import DB_NAME, Database
@@ -134,11 +136,16 @@ def main(argv=None):
     device, updater = build(hal, notifier=notifier)
 
     # The page is reachable by anyone on the same Wi-Fi, so it is locked. The
-    # PIN belongs on the device's own screen next to the setup QR code; until
-    # that screen exists, the journal is where to find it.
+    # PIN is on the setup card, next to the QR code. A device already on the
+    # home Wi-Fi shows no card, so the journal carries it too.
+    # TODO decide where an owner on the home Wi-Fi reads the PIN without
+    # starting setup again (plan 07 suggests a button; none is free yet).
     auth = Auth(updater.config.data_root,
                 log=logging.getLogger("trstenko.auth").info)
     log.info("pairing PIN: %s", auth.pin)
+    netsetup.wire(device, netsetup.NmcliNetwork(),
+                  serial=product.serial(updater.config.data_root),
+                  pin=lambda: auth.pin, new_pin=auth.reset_pin)
 
     server = None
     if not args.no_web:

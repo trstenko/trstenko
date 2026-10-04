@@ -104,6 +104,8 @@
   "screen": "Screen",
   "sleep_after": "Screen sleeps after",
   "night_off": "Switch the screen off during quiet hours",
+  "idle_animations": "Idle animations",
+  "idle_animations_hint": "Every few minutes the face does something: a glance, a yawn, a nap.",
   "listening": "Listening",
   "wake_sensitivity": "Wake word sensitivity",
   "wake_low": "Low",

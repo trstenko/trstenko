@@ -1,14 +1,27 @@
 name: checks
 
+# The repo is private and runs on the free minutes, so this runs once per
+# change and no more. A pull request is tested as it would be after the merge,
+# which is why there is no second run on main; run it by hand from the Actions
+# tab when main needs checking on its own.
 on:
-  push:
-    branches: [main]
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "tools/eval/results/**"
   workflow_dispatch:
+
+# A new push to a branch makes the run for the old one worthless.
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   checks:
     runs-on: ubuntu-latest
+    # A normal run is about 13 minutes. One that is still going at 30 has a
+    # scenario drawing frames it does not need (it has happened).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -26,7 +39,7 @@ jobs:
         run: python -m tools.check_layout
 
       - name: The emulator's scenarios
-        run: python -m tools.emulator.headless
+        run: python -u -m tools.emulator.headless
 
       # The baked face data is generated from an After Effects export that
       # lives outside this repo, so CI can only check it when the export is

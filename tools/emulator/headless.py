@@ -3949,7 +3949,12 @@ def main(argv=None):
     try:
         for title, fn in scenarios:
             print("\n== %s" % title)
+            began = time.monotonic()
             fn(report, root)
+            took = time.monotonic() - began
+            if took >= 5.0:
+                # CI is paid for by the minute: the slow ones should show.
+                print("     (%.0f s)" % took)
     finally:
         for rig in list(SchedRig.open_rigs):
             rig.close()

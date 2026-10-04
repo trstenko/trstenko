@@ -35,6 +35,7 @@ from firmware.device import Device
 from firmware.hal.base import POWER, VOL_DOWN, VOL_UP
 from firmware.scheduler.wiring import wire
 from firmware.storage import DB_NAME, Database
+from firmware.storage import factory as factory_mod
 from firmware.storage import migrate as migrate_mod
 from firmware.storage import secrets as secrets_mod
 from firmware.storage import settings as settings_mod
@@ -644,7 +645,40 @@ class Emulator(tk.Tk):
                       new_pin=lambda: self.log(
                           "pairing PIN for the page: %s"
                           % self.auth.reset_pin()))
+        device.command("factory.reset", self._factory_reset)
         return device
+
+    def _factory_reset(self, args):
+        """The page's "Reset everything". The robot wipes as it shuts down and
+        systemd starts it again; here the wipe is put off until this tick has
+        returned, so the page gets its answer first, and then a new device
+        comes up on the empty storage."""
+        if self.device.turn is not None:
+            self.device.turn.cancel()
+            self.device.turn = None
+        self.log("factory reset requested; restarting")
+        self.after(300, self._wipe_and_restart)
+        return {"ok": True, "restarting": True}
+
+    def _wipe_and_restart(self):
+        # The assistant keeps a database connection of its own, and Windows
+        # will not delete a file somebody still has open.
+        if self.assistant is not None:
+            self.assistant.close()
+            self.assistant = None
+        old = self.device
+        old.running = False
+        failed = factory_mod.wipe(
+            self.data_root, db=self.db, settings=old.settings,
+            secrets=old.secrets, new_pin=self.auth.reset_pin,
+            network=self.network)
+        self.db = Database(os.path.join(self.data_root, DB_NAME))
+        migrate_mod.migrate(self.db)
+        self.device = self._new_device()
+        self.api.device = self.device
+        self.log("factory reset done%s"
+                 % (" (failed: %s)" % ", ".join(failed) if failed else ""))
+        self.log("pairing PIN for the page: %s" % self.auth.pin)
 
     def _wire_assistant(self, device):
         """The real voice loop, if there is a key to run it with and nobody

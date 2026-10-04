@@ -201,8 +201,17 @@ def scenario_idle_acts(report, root):
     from firmware.face import states as state_defs
     from firmware.face.renderer import FaceRenderer
 
+    class _NoPicture:
+        """Two simulated hours is a quarter of a million frames, and this
+        scenario asks which face is showing, never what it looks like. Drawn
+        for real it took CI most of an hour."""
+
+        def render(self, shapes):
+            return None, None
+
     acts = set(state_defs.IDLE_ACTS)
     rig = Rig(os.path.join(root, "idle-acts"))
+    rig.device.renderer = _NoPicture()
     rig.device._rng = random.Random(3)
     rig.step(4.0)
     seen = set()
@@ -249,6 +258,7 @@ def scenario_idle_acts(report, root):
         def get(self, section, key):
             return False
     quiet = Rig(os.path.join(root, "idle-acts-off"))
+    quiet.device.renderer = _NoPicture()
     quiet.device.settings = _Off()
     quiet.step(4.0)
     seen = set()

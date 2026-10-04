@@ -145,6 +145,13 @@ class Announcer:
         return cur is not None and cur.phase in (CHIME, SPEAK, WINDOW)
 
     @property
+    def timer(self):
+        """Is what is being announced a timer going off?"""
+        cur = self.current
+        return (cur is not None and cur.kind == "job"
+                and cur.job["kind"] == "timer")
+
+    @property
     def ringing(self):
         """The id of a job that is waiting to be acknowledged, if any."""
         cur = self.current

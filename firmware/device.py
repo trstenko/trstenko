@@ -23,6 +23,7 @@ muting mid-sentence cannot leave a talking face on screen.
 
 import copy
 import logging
+import random
 import time
 
 from . import events as ev
@@ -53,6 +54,9 @@ FPS_IDLE_WARM = 5
 FPS_HOT = 10
 TARGET_FPS = FPS_ACTIVE
 IDLE_FACES = ("face_idle", "face_muted")
+# How long the idle face goes between acts (a glance, a yawn, a nap), in
+# seconds. Random within the range, so it never becomes a clock.
+IDLE_ACT_EVERY = (300.0, 900.0)
 
 VOLUME_STEP = 0.1
 
@@ -121,6 +125,9 @@ class Device:
         self.face = FaceController(self.states, "face_boot",
                                    follow=state_defs.FOLLOW)
         self.buttons = ButtonDecoder()
+        self._rng = random.Random()
+        self._next_act = None
+        self._last_act = None
 
         self.running = True
         self.turn = None
@@ -423,7 +430,7 @@ class Device:
                       for j in self.scheduler.list("pending")
                       if j["kind"] == "timer"]
         return {
-            "face": self.face.current,
+            "face": self.shown_face(),
             "stage": turn.stage if turn is not None else "idle",
             "level": round(turn.level(), 3) if turn is not None else 0.0,
             "muted": self.hal.muted(),
@@ -706,9 +713,8 @@ class Device:
     def _face_for(self, now):
         if self.announcer is not None and self.announcer.active:
             # Even when muted: the switch cuts the microphone, not the
-            # reminder. TODO face_alert, which needs drawing in After Effects;
-            # until it exists the talking face is the nearest thing that moves.
-            return "face_talking"
+            # reminder. A timer going off calls out; anything else rings.
+            return "face_timer" if self.announcer.timer else "face_alert"
         if self.hal.muted():
             return "face_muted"
         if now < self.error_until:
@@ -721,7 +727,47 @@ class Device:
             }.get(self.turn.stage, "face_idle")
         if now - self._started < self.states["face_boot"].duration:
             return "face_boot"
-        return "face_idle"
+        return self._idle_face(now)
+
+    def _idle_face(self, now):
+        """The idle face, or now and then one of its acts.
+
+        An act is only ever started from a settled idle face, and anything
+        else the device has to show replaces it at once: this is only reached
+        when nothing else wants the screen."""
+        current = self.face.current
+        if current in state_defs.IDLE_ACTS:
+            # Playing. The controller hands it back to idle when it is done.
+            return current
+        if current != "face_idle" or self._next_act is None:
+            self._next_act = now + self._rng.uniform(*IDLE_ACT_EVERY)
+            return "face_idle"
+        if now < self._next_act or self.face.progress(now) < 1.0:
+            return "face_idle"
+        if (self.settings is not None
+                and not self.settings.get("screen", "idle_animations")):
+            # Switched off on the page. Checked when one is due, so turning
+            # it back on does not play one that instant.
+            self._next_act = now + self._rng.uniform(*IDLE_ACT_EVERY)
+            return "face_idle"
+        if self._thermal != NORMAL:
+            # An act draws at 30Hz. A warm board keeps its slow idle.
+            self._next_act = now + self._rng.uniform(*IDLE_ACT_EVERY)
+            return "face_idle"
+        act = self._rng.choice([name for name in state_defs.IDLE_ACTS
+                                if name != self._last_act])
+        self._last_act = act
+        self._next_act = (now + self.states[act].duration
+                          + self._rng.uniform(*IDLE_ACT_EVERY))
+        return act
+
+    def shown_face(self):
+        """The face by a name the page knows: an idle act is still idle."""
+        current = self.face.current
+        if current in state_defs.ALERT_FACES:
+            # The page has no bell to draw; it shows the face speaking.
+            return "face_talking"
+        return "face_idle" if current in state_defs.IDLE_ACTS else current
 
     def set_card(self, fn):
         """`fn()` returns a whole-screen image to show instead of the face, or
@@ -850,7 +896,7 @@ class Device:
     def summary(self):
         """What the web UI shows under "Device"."""
         return {
-            "face": self.face.current,
+            "face": self.shown_face(),
             "muted": self.hal.muted(),
             "mute_is_hardware": self.hal.mute_is_hardware,
             "online": self.hal.system.online(),

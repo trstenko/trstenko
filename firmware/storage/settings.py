@@ -52,7 +52,10 @@ DEFAULTS = {
               "barge_in": False},
     "audio": {"vad_cutoff": 0.3, "wake_sensitivity": "normal"},
     "quiet": {"enabled": True, "from": "22:00", "to": "07:00", "volume": 0.4},
-    "screen": {"sleep_after_min": 10, "night_off": True},
+    # `idle_animations`: the idle face does something every few minutes (a
+    # glance, a yawn). Off leaves it blinking and breathing only.
+    "screen": {"sleep_after_min": 10, "night_off": True,
+               "idle_animations": True},
     "budget": {"monthly_usd": 5.0, "daily_usd": None, "daily_turns": None,
                "max_output_tokens": 300, "max_tool_steps": 4},
     # Whether the screen may show the pairing PIN on a long volume press and
@@ -110,6 +113,7 @@ RULES = {
 
     ("screen", "sleep_after_min"): ("int", 1, 1440),
     ("screen", "night_off"): ("bool",),
+    ("screen", "idle_animations"): ("bool",),
 
     ("budget", "monthly_usd"): ("float?", 0.0, 100000.0),
     ("budget", "daily_usd"): ("float?", 0.0, 100000.0),

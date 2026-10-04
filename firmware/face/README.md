@@ -55,6 +55,7 @@ y 32–192), because on the device that part is simply not sent.
 |---|---|
 | `face_boot` | After Effects |
 | `face_error` | `states.py` — overrides the comp, see below |
+| the idle acts, `face_alert`, `face_timer` | `acts.py` |
 | everything else | `states.py` |
 
 `tools/face/ae_import.py` reads `assets/brand/face-states/ae/faces.json`
@@ -87,6 +88,7 @@ a black screen.
 | `timeline.py` | `Key`, `Track`, `Shape`, `State`, and the sampler |
 | `facedata.py` | `data/faces.json` → states |
 | `states.py` | The code-animated states, and the merge with AE |
+| `acts.py` | The idle acts, and the faces for a reminder and a timer |
 | `renderer.py` | Shapes → image, plus `to_rgb565` and `spi_cost_ms` |
 | `tools/face/ae_import.py` | The AE export → states, on a build machine |
 | `tools/face/bake.py` | Writes `data/faces.json` |
@@ -109,6 +111,35 @@ self-contained idle motion does.
 Listening rests at 0.88 scale rather than 1.0 so the reaction has somewhere to
 go, and clamps itself to the blit region, since a loud room would otherwise push
 the eyes off the part of the screen that gets sent.
+
+## Idle acts
+
+An idle face that only blinks and breathes is alive for a minute and furniture
+after an hour. So every 5 to 15 minutes, at random, the device plays one act
+from `IDLE_ACTS`: a glance to each side, a tilt of the head, nodding off, a
+yawn, two hops, a nap, an eye roll. Never the same one twice in a row.
+
+Each act is a one-shot that starts and ends on the idle pose and hands back to
+`face_idle` through `FOLLOW`. The device only starts one from a settled idle
+face, and anything else it has to show (the wake word, a reminder, an error)
+replaces it at once. A warm board skips them, because an act draws at 30Hz, and
+`screen.idle_animations` in the settings switches them off. The page is still
+told the face is `face_idle`.
+
+Two that were drawn are not in the set. A wink was not wanted. "Perk up" (eyes
+taller and brighter) was dropped because it looks like `face_wake`: a face that
+seems to have heard the wake word when nobody said it is worse than a dull one.
+
+## Reminder and timer
+
+`face_alert` is a ringing reminder: small bright eyes over a bell that swings
+for a second and rests for a second. The bell is four rounded rects turning
+about one pivot, with the clapper trailing and swinging wider. Like the mic on
+the muted face, it is a symbol people already know.
+
+`face_timer` is a timer going off: no symbol, two hops and a round mouth
+calling out. A reminder has something to tell you; a timer only has to be
+noticed. Both stay teal: amber means something is wrong, and nothing is.
 
 ## Muted
 

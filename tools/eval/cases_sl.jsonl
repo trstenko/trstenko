@@ -32,9 +32,9 @@
 {"lang": "sl", "say": "kako je ime mojemu psu", "expect_tool": [], "also_ok": ["search_memory"], "reply_not": "\\b(Reks|Piki|Runo|Bela)\\b", "max_words": 25, "note": "tega ne ve in si imena ne sme izmisliti"}
 # --- glasnost
 {"lang": "sl", "say": "povečaj glasnost", "expect_tool": "set_volume", "max_words": 10, "local": true, "expect_args": {"change": "up"}}
-{"lang": "sl", "say": "to je preglasno", "expect_tool": "set_volume", "max_words": 12}
+{"lang": "sl", "say": "to je preglasno", "expect_tool": "set_volume", "expect_args": [{"change": "down"}, {"level<": 60}], "max_words": 12}
 {"lang": "sl", "say": "nastavi glasnost na trideset odstotkov", "expect_tool": "set_volume", "expect_args": {"level": 30}, "max_words": 10}
-{"lang": "sl", "say": "govori malo tišje, prosim", "expect_tool": "set_volume", "max_words": 12}
+{"lang": "sl", "say": "govori malo tišje, prosim", "expect_tool": "set_volume", "expect_args": [{"change": "down"}, {"level<": 60}], "max_words": 12}
 # --- nič ni treba narediti, in odgovor mora biti v slovenščini
 {"lang": "sl", "say": "hvala", "expect_tool": null, "reply_not": "\\b(welcome|thanks|you)\\b", "max_words": 8}
 {"lang": "sl", "say": "dobro jutro", "expect_tool": null, "reply_not": "\\b(good|morning|hello)\\b", "max_words": 15}

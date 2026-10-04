@@ -32,9 +32,9 @@
 {"say": "what's my dog's name", "expect_tool": [], "also_ok": ["search_memory"], "reply_not": "\\b(Rex|Max|Buddy|Bella)\\b", "max_words": 25, "note": "it does not know, and must not make one up"}
 # --- volume
 {"say": "turn the volume up", "expect_tool": "set_volume", "max_words": 10, "local": true}
-{"say": "that's too loud", "expect_tool": "set_volume", "max_words": 12}
+{"say": "that's too loud", "expect_tool": "set_volume", "expect_args": [{"change": "down"}, {"level<": 60}], "max_words": 12}
 {"say": "set the volume to thirty percent", "expect_tool": "set_volume", "expect_args": {"level": 30}, "max_words": 10, "local": true}
-{"say": "speak a bit quieter please", "expect_tool": "set_volume", "max_words": 12}
+{"say": "speak a bit quieter please", "expect_tool": "set_volume", "expect_args": [{"change": "down"}, {"level<": 60}], "max_words": 12}
 # --- nothing to do
 {"say": "thanks", "expect_tool": null, "max_words": 8}
 {"say": "never mind", "expect_tool": null, "max_words": 8, "local": true}

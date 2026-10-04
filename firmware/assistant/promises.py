@@ -36,8 +36,8 @@ _PATTERNS = {
         r"\bI(?:'ve| have) (?:set|started|saved|noted|cancelled|canceled|"
         r"deleted|forgotten|turned|changed|lowered|raised|added|scheduled)\b",
         # "Setting that timer now", "Starting a timer"
-        r"\b(?:setting|starting|saving|cancelling|canceling|scheduling) "
-        r"(?:that|the|a|an|your|it)\b",
+        r"\b(?:setting|starting|saving|cancelling|canceling|scheduling|"
+        r"turning|lowering|raising|changing) (?:that|the|a|an|your|it)\b",
         # "Timer set", "Reminder is set", "Volume is now"
         r"\b(?:timer|reminder|alarm)s? (?:is |has been |are |was )?"
         r"(?:set|started|saved|cancelled|canceled|scheduled|added)\b",
@@ -50,6 +50,10 @@ _PATTERNS = {
         # the model gets a second go before anything is said about failing.
         r"^(?:ok(?:ay)?|sure|alright|all right|certainly|of course|got it|"
         r"right|i will)[.!]?$",
+        # Saying what is stored without having looked is the same fault:
+        # "You have no reminders tomorrow" with no call to list them.
+        r"\b(?:you have|you've got|there are|i see) no (?:reminders?|timers?)"
+        r"\b",
     ),
     "sl": (
         # "nastavil sem", "nastavljen", "nastavljam", "bom nastavil"
@@ -67,6 +71,16 @@ _PATTERNS = {
         # "to bom uredil", "to bo urejeno", "urejeno"
         r"\b(?:uredil|uredila|urejeno)\b",
         r"\b(?:znižal|zvišal|povečal|zmanjšal)a?\b",
+        # The same in the present, as the second evaluation heard it with no
+        # tool behind it: "Že nižam.", "Zmanjšujem glasnost.", "Že delam
+        # tišje.", "Seveda, govorim tišje.", "Seveda, takoj."
+        r"\b(?:z?niž|z?manjš|poveč|zviš)(?:am|ujem)\b",
+        r"\b(?:utiš|stiš)(?:am|al|ala)\b",
+        r"\b(?:govorim|delam|bom) (?:tišje|glasneje)\b",
+        r"^(?:seveda|prav|v redu|velja)[,.]? (?:takoj|že)[.!]?$",
+        # "Jutri nimaš nobenih opomnikov" with no call to list them.
+        r"\bnima(?:š|te) (?:\w+ ){0,2}(?:opomnikov|časovnikov)\b",
+        r"\bni (?:nobenih |nobenega )?(?:opomnikov|opomnika|časovnikov)\b",
         # "Bom.", "Bom, takoj uredim.", "Prav.", "V redu." (seen live for
         # "zbudi me čez uro in pol"): a yes with nothing behind it.
         r"^bom\b",
@@ -80,8 +94,9 @@ _COMPILED = {lang: tuple(re.compile(p, re.IGNORECASE) for p in patterns)
 
 # What the model is told when it promised and called nothing. English, like
 # the rest of the prompt; it answers the user in their language.
-NUDGE = ("You said you would do that, or that it is done, but you called no "
-         "tool, so nothing has happened. Call the tool now. If something you "
+NUDGE = ("You said you would do that, that it is done, or what is stored, but "
+         "you called no tool, so nothing has happened and you have not looked. "
+         "Call the tool now. If something you "
          "need is missing, ask for it. If you cannot do it, say so plainly. "
          "If the user did not ask you to do anything, just answer them.")
 

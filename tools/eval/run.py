@@ -86,9 +86,21 @@ def run_case(rig, case, provider, model="", number=0):
     calls = []
     real_run = worker.registry.run
 
+    refused = []
+
     def recording_run(name, args, ctx, args_error=""):
-        calls.append((name, args if isinstance(args, dict) else None))
-        return real_run(name, args, ctx, args_error)
+        entry = (name, args if isinstance(args, dict) else None)
+        calls.append(entry)
+        result = real_run(name, args, ctx, args_error)
+        if not getattr(result, "ok", True):
+            refused.append(entry)
+        elif any(old[0] == name for old in refused):
+            # The device sent the call back and the model corrected it: what
+            # happened is the corrected call, once, not the tool twice.
+            for old in [r for r in refused if r[0] == name]:
+                refused.remove(old)
+                calls.remove(old)
+        return result
 
     worker.registry.run = recording_run
     spent, requests = meter.spent_month, meter.requests_day

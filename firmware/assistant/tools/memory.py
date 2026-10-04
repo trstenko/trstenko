@@ -14,10 +14,19 @@ web page's memory list (plan 07), so the page and the voice go through one code
 path.
 """
 
+import re
+
 from .. import memories as mem
 from .registry import ToolError, tool
 
 LIST_LIMIT = 100
+
+# A small model writes "The user likes mint tea." whatever language it was
+# told in (the evaluation: every time for "moj najljubši čaj je metin"). The
+# owner then reads English on the page, and a search for "čaj" finds nothing.
+# The opening is the giveaway, so the call is sent back once with the reason.
+_ENGLISH_FACT = re.compile(r"^\s*(?:the\s+)?user(?:'s|\s)", re.IGNORECASE)
+_LANGUAGE_NAME = {"sl": "Slovenian"}
 
 
 @tool(
@@ -28,14 +37,22 @@ LIST_LIMIT = 100
         "call."),
     params={
         "text": {"type": "string", "max_length": mem.MAX_CHARS,
-                 "description": "The fact as a full sentence, such as 'The "
-                                "user's sister is called Ana.'"},
+                 "description": "The fact as a full sentence, in the "
+                                "language the user is speaking, such as "
+                                "'The user's sister is called Ana.' or "
+                                "'Uporabnikovi sestri je ime Ana.'"},
         "category": {"type": "string", "enum": list(mem.CATEGORIES),
                      "description": "person, preference, fact or other."},
     },
     final=True,
 )
 def save_memory(ctx, text, category):
+    language = _LANGUAGE_NAME.get(ctx.lang)
+    if language and _ENGLISH_FACT.match(text or ""):
+        raise ToolError(
+            "That is written in English. Write the fact in %s, the language "
+            "the user speaks, and call save_memory again." % language,
+            code="wrong_language")
     result = ctx.command("memories.save", {"text": text,
                                            "category": category,
                                            "source": "voice"})

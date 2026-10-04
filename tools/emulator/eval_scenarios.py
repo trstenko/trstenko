@@ -59,6 +59,24 @@ def scenario_eval_scoring(report, root):
                  and _failed(score.score(either, score.Outcome(
                      calls=[("set_timer", {"seconds": 3600})], reply="Set.")))
                  == ["arguments"])
+    loud = {"say": "that's too loud", "expect_tool": "set_volume",
+            "expect_args": [{"change": "down"}, {"level<": 60}]}
+
+    def volume(**args):
+        return _failed(score.score(loud, score.Outcome(
+            calls=[("set_volume", args)], reply="Quieter.")))
+
+    report.check("an argument can be asked to be under or over a number",
+                 volume(change="down") == [] and volume(level=40) == []
+                 and volume(change="up") == ["arguments"]
+                 and volume(level=60) == ["arguments"]
+                 and volume(level=80) == ["arguments"]
+                 and volume(level="low") == ["arguments"]
+                 and _failed(score.score(
+                     {"say": "louder", "expect_tool": "set_volume",
+                      "expect_args": {"level>": 60}},
+                     score.Outcome(calls=[("set_volume", {"level": 75})],
+                                   reply="Louder."))) == [])
     twice = score.Outcome(calls=good.calls * 2, reply="Done.")
     report.check("the same tool called twice fails",
                  _failed(score.score(REMINDER, twice)) == ["called once"])

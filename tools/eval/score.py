@@ -16,9 +16,11 @@ What a case may expect:
 - `also_ok`: tools that may be called as well without it counting as an extra
   (`list_reminders` before a `cancel_reminder`, say).
 - `expect_args`: arguments of the expected tool's first call. `"key"` must be
-  equal; `"key~"` must contain the text, whatever the case of the letters. A
+  equal; `"key~"` must contain the text, whatever the case of the letters;
+  `"key<"` and `"key>"` must be a number below or above the one given. A
   list of such objects means any one of them is right ("in an hour and a half"
-  is a 5400-second timer or a reminder at a time).
+  is a 5400-second timer or a reminder at a time; "that's too loud" is a step
+  down or a level under the 60 the device starts at).
 - `max_words`: the most words the whole spoken reply may have.
 - `expect_question`: true if the reply has to end by asking something.
 - `say`/`say_not` checks: `reply_matches` and `reply_not` are regular
@@ -111,6 +113,15 @@ def _wrong_args(args, expected):
             got = args.get(key[:-1])
             if str(value).lower() not in str(got or "").lower():
                 wrong.append("%s=%r lacks %r" % (key[:-1], got, value))
+        elif key[-1:] in "<>":
+            got = args.get(key[:-1])
+            number = isinstance(got, (int, float)) and not isinstance(got,
+                                                                      bool)
+            if not number or not (got < value if key[-1] == "<"
+                                  else got > value):
+                wrong.append("%s=%r, wanted %s %r" % (
+                    key[:-1], got, "under" if key[-1] == "<" else "over",
+                    value))
         elif not _same(args.get(key), value):
             wrong.append("%s=%r, wanted %r" % (key, args.get(key), value))
     return wrong

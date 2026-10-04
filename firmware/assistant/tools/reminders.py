@@ -20,9 +20,8 @@ MAX_LISTED = 10
     name="set_timer",
     description=(
         "Start a countdown when the user asks for a timer, as in 'set a "
-        "timer for ten minutes'. If they ask to be reminded of something "
-        "('remind me', 'opomni me'), use set_reminder, also for 'in twenty "
-        "minutes'."),
+        "timer for ten minutes'. To be reminded of something ('remind me', "
+        "'opomni me'), use set_reminder, even 'in twenty minutes'."),
     params={
         "seconds": {"type": "integer", "min": 1, "max": 24 * 3600,
                     "description": "How long, in seconds, at most 24 hours."},
@@ -75,7 +74,8 @@ def set_reminder(ctx, when, text):
     name="list_reminders",
     description=(
         "List the pending reminders and timers, with their numbers. Use "
-        "before cancelling one, or when asked what is coming up."),
+        "before cancelling one, or when asked what is coming up or planned, "
+        "as in 'do I have anything on tomorrow'."),
 )
 def list_reminders(ctx):
     result = ctx.command("reminders.list", {"state": "pending"})

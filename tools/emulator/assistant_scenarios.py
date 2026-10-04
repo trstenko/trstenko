@@ -1917,6 +1917,22 @@ def scenario_tools_memory(report, root):
                                            "category": "preference"})
                 report.check("the confirmation is in the owner's language",
                              r.say == "V redu, shranjeno.", r.say)
+                before = sl.store.count()
+                r = sl.run("save_memory", {
+                    "text": "The user's favorite tea is mint tea.",
+                    "category": "preference"})
+                report.check("a Slovenian owner's memory written in English "
+                             "is sent back, with the reason, and not saved",
+                             not r.ok
+                             and r.payload.get("code") == "wrong_language"
+                             and "Slovenian" in r.content
+                             and sl.store.count() == before, r.content)
+                r = sl.run("save_memory", {
+                    "text": "Uporabnikov najljubši čaj je metin.",
+                    "category": "preference"})
+                report.check("and the same fact in Slovenian is saved",
+                             r.ok and sl.store.count() == before + 1,
+                             r.content)
             finally:
                 sl.close()
         finally:
@@ -2784,6 +2800,9 @@ def scenario_loop_promises(report, root):
 
     said = ("I'll set that.", "Setting that timer now.", "Timer set for ten "
             "minutes.", "I've saved that.", "I'll remind you to stretch.")
+    report.check("so is saying what is stored without having looked",
+                 promises.looks_like_promise("You have no reminders tomorrow.")
+                 and promises.looks_like_promise("Turning it down now."))
     plain = ("Shall I set a timer?", "For how long?", "You're welcome.",
              "I cannot play music.", "I can set timers and reminders.")
     report.check("sentences that claim a job is done, or will be, are told "
@@ -2791,9 +2810,16 @@ def scenario_loop_promises(report, root):
                  all(promises.looks_like_promise(s) for s in said)
                  and not any(promises.looks_like_promise(s) for s in plain))
     slovene = ("To bom uredil.", "Zbudil te bom.", "To si bom zapomnil.",
-               "Prav, budim te čez uro in pol.", "V redu, shranjeno.")
+               "Prav, budim te čez uro in pol.", "V redu, shranjeno.",
+               # The second evaluation: said with no tool call behind it.
+               "Že nižam.", "Zmanjšujem glasnost.", "Že delam tišje.",
+               "Seveda, govorim tišje.", "Seveda, takoj.",
+               "Jutri nimaš nobenih opomnikov ali shranjenih načrtov.",
+               "Jutri nimaš shranjenih nobenih opomnikov.")
     not_slovene = ("Kdaj pa želiš, da te opomnim?", "Ni za kaj.",
-                   "Žal ne morem predvajati glasbe.")
+                   "Žal ne morem predvajati glasbe.",
+                   "Ali želiš, da govorim tišje?", "Seveda, Ljubljana.",
+                   "Ni problema.")
     report.check("in Slovenian too, with the phrases the evaluation recorded",
                  all(promises.looks_like_promise(s, "sl") for s in slovene)
                  and not any(promises.looks_like_promise(s, "sl")

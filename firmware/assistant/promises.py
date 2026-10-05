@@ -77,6 +77,8 @@ _PATTERNS = {
         r"\b(?:z?niž|z?manjš|poveč|zviš)(?:am|ujem)\b",
         r"\b(?:utiš|stiš)(?:am|al|ala)\b",
         r"\b(?:govorim|delam|bom) (?:tišje|glasneje)\b",
+        # "Že tišje." (the third evaluation)
+        r"^že (?:tišje|glasneje)\b",
         r"^(?:seveda|prav|v redu|velja)[,.]? (?:takoj|že)[.!]?$",
         # "Jutri nimaš nobenih opomnikov" with no call to list them.
         r"\bnima(?:š|te) (?:\w+ ){0,2}(?:opomnikov|časovnikov)\b",
@@ -85,7 +87,8 @@ _PATTERNS = {
         # "zbudi me čez uro in pol"): a yes with nothing behind it.
         r"^bom\b",
         r"\b(?:uredim|poskrbim|naredim)\b",
-        r"^(?:prav|velja|v redu|seveda|okej|ok|dogovorjeno)[.!]?$",
+        r"^(?:prav|velja|v redu|seveda|okej|ok|dogovorjeno|jasno|razumem)"
+        r"[.!]?$",
     ),
 }
 

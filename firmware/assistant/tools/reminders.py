@@ -63,7 +63,16 @@ def set_reminder(ctx, when, text):
     except ToolError as exc:
         # Say what time it is, so the model can fix the call instead of
         # guessing again (llm-workflow.md, Finding 12).
-        exc.extra["now"] = ctx.now_local()
+        now = ctx.now_local()
+        exc.extra["now"] = now
+        if "passed" in str(exc) and str(when)[:10] == now[:10]:
+            # "Remind me at three", said at ten past three. Told only that
+            # it has passed, a small model says so and stops; the owner
+            # meant a three that is still to come.
+            exc.extra["hint"] = (
+                "Earlier today. If the user gave only an hour, do not tell "
+                "them it has passed: ask whether they mean tonight or "
+                "tomorrow.")
         raise
     return {"id": result["id"], "say": ctx.strings(
         "reminder_set", when=spoken.with_preposition(

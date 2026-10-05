@@ -2109,6 +2109,14 @@ def scenario_tools_reminders(report, root):
                      "what time it is so it can fix the call",
                      not r.ok and "already passed" in r.content
                      and r.payload["now"] == "2026-10-02T17:50", r.content)
+        report.check("earlier today, it is told to ask which one was meant "
+                     "rather than report that it has passed",
+                     "ask whether" in r.payload.get("hint", "")
+                     and "ask whether" in r.content, r.content)
+        r = rig.run("set_reminder", {"when": "2026-10-01T09:00",
+                                     "text": "Too late."})
+        report.check("a day that is over gets no such hint",
+                     not r.ok and "hint" not in r.payload, r.content)
         r = rig.run("set_reminder", {"when": "tomorrow at six",
                                      "text": "Call mum."})
         report.check("a time that is not ISO says how to write one",
@@ -2815,7 +2823,9 @@ def scenario_loop_promises(report, root):
                "Že nižam.", "Zmanjšujem glasnost.", "Že delam tišje.",
                "Seveda, govorim tišje.", "Seveda, takoj.",
                "Jutri nimaš nobenih opomnikov ali shranjenih načrtov.",
-               "Jutri nimaš shranjenih nobenih opomnikov.")
+               "Jutri nimaš shranjenih nobenih opomnikov.",
+               # The third: "Že tišje." and "Jasno. Pretegnem se!"
+               "Že tišje.", "Jasno.")
     not_slovene = ("Kdaj pa želiš, da te opomnim?", "Ni za kaj.",
                    "Žal ne morem predvajati glasbe.",
                    "Ali želiš, da govorim tišje?", "Seveda, Ljubljana.",

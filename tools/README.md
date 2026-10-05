@@ -121,6 +121,33 @@ stops the device waking itself up. A PC has no equivalent, so here the
 emulator will happily hear its own output. That test needs hardware — Phase 1,
 step 11.
 
+## The tool creator
+
+    python -m tools.toolmaker
+
+Opens a page in the browser for writing a third-party tool: a `.trsttool`
+file the device can be given later (plan 10). Your tools are kept as plain
+folders in `~/trstenko-tools` (`--dir` to change it), so you can also edit
+them in your own editor.
+
+A new tool opens as a working weather tool with seven tests. You change three
+files:
+
+- `tool.json`: who the tool is, which hosts it may reach, and the description
+  and arguments the model is given.
+- `tool.py`: the code. The docstring at the top says what `ctx` offers.
+- `tests.py`: your tests. The internet is a dict of answers you write down.
+
+**Run tests** runs your tests and then seven checks every tool gets (no
+internet, an error page, an answer that is not JSON, an empty answer, wrong
+arguments). **Try it** calls the tool once and shows the exact text the model
+would read. **Export** writes the `.trsttool`.
+
+The tool runs here the way it will on a device: in a process of its own that
+may not open sockets, start programs or touch files, with the internet reached
+only through the hosts it listed. A device cannot install one yet; that page
+is the next step of plan 10.
+
 ## Cutting a release
 
     python -m tools.release keygen --out release-key.json

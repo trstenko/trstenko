@@ -37,6 +37,7 @@ from firmware.webui import Auth, UpdateApi
 from . import audio as audio_mod
 from . import setup_scenarios
 from . import eval_scenarios
+from . import extension_scenarios
 from .clock import FakeClock
 from .fake_releases import FakeReleases
 from .hal import EmulatedHAL
@@ -3922,6 +3923,11 @@ def main(argv=None):
         ("the owner's own PIN, and hiding it",
          setup_scenarios.scenario_pin_options),
         ("gzipped copies of the page", setup_scenarios.scenario_page_gzip),
+        ("third-party tools: reading a .trsttool",
+         extension_scenarios.scenario_extension_package),
+        ("third-party tools: running one in its own process",
+         extension_scenarios.scenario_extension_runs),
+        ("the tool creator", extension_scenarios.scenario_toolmaker),
         ("the model evaluation: scoring", eval_scenarios.scenario_eval_scoring),
         ("the model evaluation: the runner, on the fake provider",
          eval_scenarios.scenario_eval_runner),

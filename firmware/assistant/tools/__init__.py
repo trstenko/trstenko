@@ -9,17 +9,25 @@ are eight, and `build()` is the only place the list is made.
 from . import device, memory, reminders
 from .registry import Registry, ToolContext, ToolError, tool
 
-__all__ = ["build", "Registry", "ToolContext", "ToolError", "tool"]
+__all__ = ["build", "BUILT_IN", "BUILT_IN_NAMES", "Registry", "ToolContext",
+           "ToolError", "tool"]
 
 
-def build():
-    return Registry([
-        memory.save_memory,
-        memory.search_memory,
-        memory.forget_memory,
-        reminders.set_timer,
-        reminders.set_reminder,
-        reminders.list_reminders,
-        reminders.cancel_reminder,
-        device.set_volume,
-    ])
+BUILT_IN = (
+    memory.save_memory,
+    memory.search_memory,
+    memory.forget_memory,
+    reminders.set_timer,
+    reminders.set_reminder,
+    reminders.list_reminders,
+    reminders.cancel_reminder,
+    device.set_volume,
+)
+# A third-party tool may not take one of these names.
+BUILT_IN_NAMES = tuple(fn.spec.name for fn in BUILT_IN)
+
+
+def build(extra=()):
+    """The built-in tools, then any third-party ones that are switched on
+    (`assistant/extensions`), always after and always in the same order."""
+    return Registry(list(BUILT_IN) + list(extra))

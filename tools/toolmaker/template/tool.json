@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "id": "my.weather",
+  "name": "Weather",
+  "version": "0.1.0",
+  "author": "",
+  "about": "Says what the weather is like in a city right now.",
+  "permissions": {
+    "internet": ["geocoding-api.open-meteo.com", "api.open-meteo.com"],
+    "storage": true
+  },
+  "tools": [
+    {
+      "name": "get_weather",
+      "function": "get_weather",
+      "description": "Get the weather right now in a city, when the user asks what it is like outside or whether they need a coat. Use the last city if they name none.",
+      "params": {
+        "city": {
+          "type": "string",
+          "optional": true,
+          "max_length": 60,
+          "description": "The city, as the user said it. Leave out to use the last one."
+        }
+      }
+    }
+  ]
+}

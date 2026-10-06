@@ -12,7 +12,7 @@ boot and show a face, so `firmware.webui` never imports this at module level.
 import json
 
 from .api import UpdateApi
-from .headers import MAX_BODY, SECURITY_HEADERS
+from .headers import MAX_TOOL_BODY, SECURITY_HEADERS, max_body
 
 
 def create_app(manager, device=None, auth=None):
@@ -25,7 +25,9 @@ def create_app(manager, device=None, auth=None):
     api = UpdateApi(manager, device, auth)
     app = Flask(__name__, static_folder=None)
 
-    app.config["MAX_CONTENT_LENGTH"] = MAX_BODY
+    # Flask's own limit is the largest any path may send; `api_route` holds
+    # each path to its own.
+    app.config["MAX_CONTENT_LENGTH"] = MAX_TOOL_BODY
 
     @app.before_request
     def captive():
@@ -64,6 +66,11 @@ def create_app(manager, device=None, auth=None):
 
     @app.route("/api/<path:rest>", methods=["GET", "POST", "PATCH", "DELETE"])
     def api_route(rest):
+        if (request.content_length or 0) > max_body(request.method,
+                                                    "/api/" + rest):
+            return Response(json.dumps({"error": "request too large"}),
+                            status=413, mimetype="application/json",
+                            headers={"Cache-Control": "no-store"})
         # Parsed whatever the Content-Type says, as the standard-library
         # server does, so the two cannot disagree about a request.
         body = ({} if request.method == "GET"

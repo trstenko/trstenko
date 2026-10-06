@@ -5,6 +5,7 @@ emptied. It removes (plan 06):
 
 - the database: memories, reminders, usage, the logs, and its backups;
 - the secrets file: every API key;
+- the tools the owner installed, and what they kept (plan 10);
 - the settings, except the update channel, which describes the device and not
   its owner;
 - the pairing PIN, which is replaced by a new one;
@@ -71,8 +72,14 @@ def wipe(data_root, db=None, settings=None, secrets=None, new_pin=None,
             fresh.data["updates"] = dict(settings.data.get("updates") or {})
         fresh.save()
 
+    def installed_tools():
+        from ..assistant.extensions import store
+
+        store.wipe(data_root)
+
     step("database", database)
     step("keys", keys)
+    step("tools", installed_tools)
     step("settings", the_settings)
     if new_pin is not None:
         step("pin", new_pin)

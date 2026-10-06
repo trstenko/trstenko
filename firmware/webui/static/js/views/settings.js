@@ -8,6 +8,7 @@ const SUB = {
   assistant: () => import("/js/views/assistant.js"),
   device: () => import("/js/views/device.js"),
   memories: () => import("/js/views/memories.js"),
+  tools: () => import("/js/views/tools.js"),
   updates: () => import("/js/views/updates.js"),
   privacy: () => import("/js/views/privacy.js"),
 };
@@ -19,8 +20,9 @@ export async function render(root, ctx) {
   const sub = ctx.rest[0];
   if (sub && SUB[sub]) return (await SUB[sub]()).render(root, ctx);
 
-  const [keys, settings, memories, update] = await Promise.all([api("GET", "/api/v1/keys"),
-    api("GET", "/api/v1/settings"), api("GET", "/api/v1/memories"), api("GET", "/api/update")]);
+  const [keys, settings, memories, update, tools] = await Promise.all([api("GET", "/api/v1/keys"),
+    api("GET", "/api/v1/settings"), api("GET", "/api/v1/memories"), api("GET", "/api/update"),
+    api("GET", "/api/v1/tools")]);
   const s = settings.ok ? settings.data.settings : null;
   const u = update.ok ? update.data : {};
   const p = u.product || {};
@@ -48,6 +50,7 @@ export async function render(root, ctx) {
       row("device", "device", t("device"), device),
       row("memories", "bookmark", t("memories"),
         memories.ok ? t("n_of_max", {n: memories.data.count, max: memories.data.limit}) : ""),
+      row("tools", "plug", t("tools"), tools.ok ? t("tools_row", {n: tools.data.installed.length}) : ""),
       row("updates", "download", t("updates"), u.version ? t("installed_version", {version: u.version}) : "",
         waiting ? pill(t("update_pill")) : null),
       row("privacy", "shield", t("privacy"),

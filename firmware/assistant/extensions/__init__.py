@@ -16,11 +16,14 @@ import os
 from ..tools.registry import Spec, ToolError
 from . import host, package
 
-__all__ = ["functions", "host", "package", "MAX_ENABLED"]
+__all__ = ["functions", "host", "package", "MAX_ENABLED", "WARN_FROM"]
 
 # Tool functions switched on at once, across every installed file. The list is
-# sent with every request, and a small model picks worse from a long one.
-MAX_ENABLED = 4
+# sent with every request, and a small model picks worse from a long one, so
+# the page warns from the fifth on (Maj, 2026-10-06: six, with a warning at
+# five and six, in place of a hard four).
+MAX_ENABLED = 6
+WARN_FROM = 5
 
 
 def functions(pkg, folder, storage_dir=None, fetcher=host.fetch,

@@ -12,6 +12,11 @@
     POST  /api/v1/setup/scan               look for networks again
     POST  /api/v1/setup/join               {"ssid", "password"?}
     POST  /api/v1/factory-reset            {"pin"}: everything, then a restart
+    GET   /api/v1/tools                    built-in and installed tools
+    POST  /api/v1/tools/preview            {"file": base64}: what a file is
+    POST  /api/v1/tools                    {"file": base64, "pin"}: install it
+    POST  /api/v1/tools/{id}/enable        {"on": true}
+    DELETE /api/v1/tools/{id}              the tool and what it kept
     GET   /api/v1/settings                 everything but secrets
     PATCH /api/v1/settings                 {"voice": {"volume": 0.4}}, validated
 
@@ -42,7 +47,7 @@ API_VERSION = 1
 # What a client can rely on being here. A new capability is added to this list
 # and never changes an old one, so an app can ask rather than guess.
 FEATURES = ("reminders", "settings", "memories", "keys", "usage", "privacy",
-            "live", "setup")
+            "live", "setup", "tools")
 
 STATUS = {ev.INVALID: 400, ev.NOT_FOUND: 404, ev.CONFLICT: 409,
           ev.UNAVAILABLE: 503}
@@ -165,6 +170,8 @@ class V1Api:
         if parts == ["factory-reset"]:
             return self._only(method, "POST",
                               lambda: self._factory_reset(body))
+        if parts and parts[0] == "tools" and len(parts) <= 3:
+            return self._tools(method, parts, body)
         if parts == ["privacy", "delete"]:
             return self._only(method, "POST",
                               lambda: self._privacy_delete(body))
@@ -272,6 +279,56 @@ class V1Api:
         if refused is not None:
             return refused
         return self._command("factory.reset")
+
+    def _tools(self, method, parts, body):
+        """Installed tools (plan 10). Installing needs the PIN again: it puts
+        somebody's code on the device."""
+        if len(parts) == 1:
+            if method == "GET":
+                return self._command("tools.list")
+            if method != "POST":
+                return self._wrong_method("GET, POST")
+            data, refused = self._tool_file(body)
+            if refused is not None:
+                return refused
+            refused = self._confirm(body)
+            if refused is not None:
+                return refused
+            status, payload = self._command("tools.install", {"data": data})
+            return (201 if status == 200 else status), payload
+        if parts[1:] == ["preview"]:
+            if method != "POST":
+                return self._wrong_method("POST")
+            data, refused = self._tool_file(body)
+            if refused is not None:
+                return refused
+            return self._command("tools.preview", {"data": data})
+        if len(parts) == 2:
+            if method != "DELETE":
+                return self._wrong_method("DELETE")
+            return self._command("tools.remove", {"id": parts[1]})
+        if parts[2] != "enable":
+            return 404, {"error": "no such endpoint"}
+        if method != "POST":
+            return self._wrong_method("POST")
+        if not isinstance(body, dict) or not isinstance(body.get("on"), bool):
+            return _bad('Send {"on": true} or {"on": false}.')
+        return self._command("tools.enable", {"id": parts[1],
+                                              "on": body["on"]})
+
+    def _tool_file(self, body):
+        """(the file's bytes, None) or (None, the refusal)."""
+        import base64
+        import binascii
+
+        text = body.get("file") if isinstance(body, dict) else None
+        if not isinstance(text, str) or not text:
+            return None, _bad("Send the .trsttool file as base64 in "
+                              '"file".')
+        try:
+            return base64.b64decode(text, validate=True), None
+        except (binascii.Error, ValueError):
+            return None, _bad("The file did not arrive whole. Try again.")
 
     def _confirm(self, body):
         """None if the caller may go on, else the refusal."""

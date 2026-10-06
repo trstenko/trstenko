@@ -3927,6 +3927,8 @@ def main(argv=None):
          extension_scenarios.scenario_extension_package),
         ("third-party tools: running one in its own process",
          extension_scenarios.scenario_extension_runs),
+        ("third-party tools: the Tools card",
+         extension_scenarios.scenario_extension_installed),
         ("the tool creator", extension_scenarios.scenario_toolmaker),
         ("the model evaluation: scoring", eval_scenarios.scenario_eval_scoring),
         ("the model evaluation: the runner, on the fake provider",

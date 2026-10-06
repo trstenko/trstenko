@@ -24,3 +24,15 @@ SECURITY_HEADERS = {
 # hundred bytes. Anything near this is somebody else's idea of a request, and
 # it is read before the token is checked.
 MAX_BODY = 64 * 1024
+
+# The one exception: a `.trsttool` file on its way in (plan 10). The file is at
+# most 256 KB and travels as base64 inside JSON, which is a third larger.
+TOOL_PATHS = ("/api/v1/tools", "/api/v1/tools/preview")
+MAX_TOOL_BODY = 352 * 1024
+
+
+def max_body(method, path):
+    """The largest body `method path` may carry."""
+    if method == "POST" and "/" + path.strip("/") in TOOL_PATHS:
+        return MAX_TOOL_BODY
+    return MAX_BODY

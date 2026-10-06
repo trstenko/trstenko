@@ -24,6 +24,8 @@ const ICONS = {
   right: [["path", {d: "M9 6l6 6-6 6"}]],
   left: [["path", {d: "M15 6l-6 6 6 6"}]],
   down: [["path", {d: "M6 9l6 6 6-6"}]],
+  lock: [["rect", {x: 5, y: 11, width: 14, height: 9, rx: 2.5}], ["path", {d: "M8 11V8a4 4 0 0 1 8 0v3"}]],
+  plug: [["path", {d: "M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"}]],
 };
 
 export function icon(name, size, stroke, cls) {
@@ -190,20 +192,24 @@ export async function busy(button, work) {
  *  phone, a dialog on a desktop. With `pin`, the owner types the PIN from the
  *  device's screen again (plan 07). `run(pin)` does the work and returns an
  *  error sentence, or nothing when it went through; the sheet stays open on an
- *  error so a mistyped PIN can be typed again. Resolves to whether it ran. */
-export function confirmSheet({title, body, action, cancel, pin, run}) {
+ *  error so a mistyped PIN can be typed again. Resolves to whether it ran.
+ *  `body` is a sentence or an element. With `agree`, a box with that label has
+ *  to be ticked first. `calm` is for something that is not a deletion. */
+export function confirmSheet({title, body, action, cancel, pin, run, agree, calm}) {
   return new Promise((done) => {
     const before = document.activeElement;
     const error = h("p", {class: "result err", role: "alert", hidden: true});
     const pinBox = pin ? input({id: "sheet-pin", class: "input input-pin sm", inputmode: "numeric",
       pattern: "[0-9]*", maxlength: "10", autocomplete: "off", placeholder: "······"}) : null;
-    const go = h("button", {class: "btn btn-danger btn-lg btn-block", type: "submit"}, action);
+    const go = h("button", {class: "btn " + (calm ? "btn-primary" : "btn-danger") + " btn-lg btn-block", type: "submit"}, action);
+    const agreeBox = agree ? h("input", {type: "checkbox", id: "sheet-agree"}) : null;
     const keep = h("button", {class: "btn btn-lg btn-block", type: "button"}, cancel || t("cancel"));
     const scrim = h("div", {class: "scrim"});
     const sheet = h("form", {class: "sheet", role: "dialog", "aria-modal": "true", "aria-labelledby": "sheet-title"},
       h("div", {class: "grabber"}),
       h("div", {class: "stack gap-s"}, h("h2", {class: "title", id: "sheet-title"}, title),
-        body ? h("p", {class: "muted"}, body) : null),
+        body instanceof Node ? body : body ? h("p", {class: "muted"}, body) : null),
+      agreeBox ? h("label", {class: "hstack", for: "sheet-agree"}, agreeBox, h("span", {}, agree)) : null,
       pinBox ? h("div", {class: "field"}, h("label", {for: "sheet-pin"}, t("pin_from_screen")), pinBox) : null,
       error, go, keep);
     const close = (ran) => {
@@ -216,6 +222,7 @@ export function confirmSheet({title, body, action, cancel, pin, run}) {
     const onKey = (e) => { if (e.key === "Escape") close(false); };
     sheet.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (agreeBox && !agreeBox.checked) { agreeBox.focus(); return; }
       if (pinBox && !pinBox.value.trim()) { pinBox.focus(); return; }
       const problem = await busy(go, () => run(pinBox ? pinBox.value.trim() : undefined));
       if (!problem) { close(true); return; }
@@ -227,6 +234,6 @@ export function confirmSheet({title, body, action, cancel, pin, run}) {
     scrim.addEventListener("click", () => close(false));
     document.addEventListener("keydown", onKey);
     document.body.append(scrim, sheet);
-    (pinBox || keep).focus();
+    (agreeBox || pinBox || keep).focus();
   });
 }

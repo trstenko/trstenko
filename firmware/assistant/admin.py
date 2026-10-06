@@ -15,7 +15,8 @@ device's. Only one test per provider runs at a time.
 
 **Privacy.** `privacy.export` is everything the device holds about the owner,
 as one JSON document: the settings, the memories, the reminders and the usage
-per day. It has no keys in it, ever. `privacy.delete` removes memories, the
+per day, and the installed tools with what each has kept. It has no keys in
+it, ever. `privacy.delete` removes memories, the
 conversation log, the usage history, or all three; the web layer asks for the
 PIN again before it sends the command (plan 07).
 """
@@ -164,6 +165,7 @@ def _export(device, assistant):
             "settings": device.settings.public(),
             "memories": memories, "reminders": reminders,
             "usage_daily": usage,
+            "tools": assistant.tools.exported() if assistant.tools else [],
             "note": "API keys are never part of an export."}
 
 

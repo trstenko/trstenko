@@ -18,7 +18,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qsl
 
-from .headers import MAX_BODY, SECURITY_HEADERS
+from .headers import SECURITY_HEADERS, max_body
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 
@@ -110,7 +110,7 @@ class _Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = -1
-        if length < 0 or length > MAX_BODY:
+        if length < 0 or length > max_body(method, path):
             self._send(413, json.dumps({"error": "request too large"}).encode(),
                        "application/json")
             return

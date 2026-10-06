@@ -37,6 +37,7 @@ import threading
 
 from .. import events as ev
 from . import admin as admin_mod
+from .extensions import store as tool_store
 from . import lang as lang_mod
 from . import memories as memories_mod
 from . import meter as meter_mod
@@ -84,6 +85,7 @@ class Assistant:
         self.voice_note = ""
         self.audio_note = ""
         self.tables_note = ""
+        self.tools = None
 
     def status(self):
         device = self.device
@@ -183,7 +185,15 @@ def wire_assistant(device, hal, data_root, synth=None, detector=None,
         return assistant
     assistant.providers = providers
 
-    registry = tools.build()
+    # Tools the owner installed (plan 10). One that will not load is left
+    # out; it must never be the reason the built-in ones are missing.
+    installed = tool_store.ToolStore(tool_store.default_root(data_root))
+    try:
+        registry = tools.build(installed.functions())
+    except Exception:
+        log.exception("the installed tools could not be loaded")
+        registry = tools.build()
+    assistant.tools = installed
     store = memories_mod.MemoryStore(device.db, wall=device.wall)
     tools.memory.attach(device, store)
     session = session_mod.Session(device.mono)
@@ -296,6 +306,7 @@ def wire_assistant(device, hal, data_root, synth=None, detector=None,
     device.command("usage.summary", lambda args: meter.summary())
     device.command("assistant.status", lambda args: assistant.status())
     admin_mod.attach(device, assistant)
+    tool_store.attach(device, assistant, installed)
     device.status_extra["assistant"] = assistant.status
 
     def on_settings(changed):

@@ -434,3 +434,196 @@ def scenario_toolmaker(report, root):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def _pair(tool_id, name, first, second=None):
+    """A harmless package with one or two functions."""
+    names = [n for n in (first, second) if n]
+    manifest = {
+        "format": 1, "id": tool_id, "name": name, "version": "1.0.0",
+        "author": "A. Tester", "about": "Does nothing much.",
+        "permissions": {},
+        "tools": [{"name": n, "description": "Says %s." % n, "params": {}}
+                  for n in names]}
+    code = "".join("def %s(ctx):\n    return {}\n\n\n" % n for n in names)
+    return package.pack(manifest, {"tool.py": code.encode("utf-8")})
+
+
+def scenario_extension_installed(report, root):
+    """The Tools card: installing with the PIN, switching on and off, the
+    limit of six, removing, and what a factory reset and an export do."""
+    import base64
+
+    from firmware.assistant.extensions import store as store_mod
+    from firmware.webui import headers
+    from firmware.webui.api import UpdateApi
+    from firmware.webui.auth import Auth
+
+    from .assistant_scenarios import AssistantRig
+
+    rig = AssistantRig(root, "toolscard")
+    try:
+        data = rig.sched.data
+        auth = Auth(data, clock=rig.clock.wall)
+        api = UpdateApi(None, rig.device, auth)
+        token = api.dispatch("POST", "/api/auth", {"pin": auth.pin})[1]["token"]
+        asked = []
+
+        def internet(tool_id, method, url, headers, body):
+            asked.append(url)
+            return {"status": 200, "text": '{"degrees": 12}'}
+        rig.assistant.tools.fetcher = internet
+
+        def call(method, path, body=None):
+            return api.dispatch(method, path, body, token)
+
+        def b64(blob):
+            return base64.b64encode(blob).decode("ascii")
+
+        def names():
+            return rig.assistant.worker.registry.names()
+
+        def install(blob):
+            return call("POST", "/api/v1/tools",
+                        {"file": b64(blob), "pin": auth.pin})
+
+        weather = package.pack(MANIFEST, {"tool.py": CODE.encode("utf-8")})
+        folder = os.path.join(data, "tools", "installed", "demo.weather")
+
+        status, out = call("GET", "/api/v1/tools")
+        report.check("a new device lists the built-in tools and nothing else",
+                     status == 200 and out["installed"] == []
+                     and out["built_in"] == list(tools.BUILT_IN_NAMES)
+                     and (out["max"], out["warn_from"]) == (6, 5), str(out))
+        report.check("and does not claim a tool is fenced in",
+                     out["sandboxed"] is False)
+
+        status, out = call("POST", "/api/v1/tools/preview",
+                           {"file": b64(weather)})
+        report.check("a file can be looked at before it is kept",
+                     status == 200 and out["name"] == "Weather"
+                     and out["hosts"] == ["api.example.org"]
+                     and out["storage"] is True and out["will_enable"]
+                     and out["replaces"] is None
+                     and out["tools"][0]["name"] == "get_weather", str(out))
+        report.check("looking keeps nothing", not os.path.exists(folder))
+
+        status, out = call("POST", "/api/v1/tools", {"file": b64(weather)})
+        report.check("installing needs the PIN again",
+                     status == 403 and out.get("needs_pin")
+                     and not os.path.exists(folder), str(out))
+        status, out = install(b"this is not a tool")
+        report.check("a file that is not a tool is refused with a sentence",
+                     status == 400 and "cannot be installed" in out["error"],
+                     str(out))
+        status, out = call("POST", "/api/v1/tools",
+                           {"file": "not base64!", "pin": auth.pin})
+        report.check("and so is one that did not arrive whole", status == 400)
+
+        status, out = install(weather)
+        report.check("with the PIN it is installed and switched on",
+                     status == 201 and out["tool"]["enabled"]
+                     and out["enabled_functions"] == 1
+                     and os.path.isfile(os.path.join(folder, "tool.py")),
+                     str(out))
+        report.check("and the model is offered it after the built-in ones",
+                     names()[-1] == "get_weather"
+                     and names()[:8] == list(tools.BUILT_IN_NAMES))
+        result = rig.assistant.worker.registry.run(
+            "get_weather", {"city": "Maribor"}, _Ctx())
+        kept = os.path.join(data, "tools", "data", "demo.weather.json")
+        report.check("it runs, through the device's own door to the internet",
+                     result.ok and result.payload["data"]["degrees"] == 12
+                     and len(asked) == 1 and os.path.isfile(kept),
+                     str(result.payload))
+
+        status, out = call("POST", "/api/v1/tools/demo.weather/enable",
+                           {"on": False})
+        report.check("switched off, the model is not offered it",
+                     status == 200 and out["enabled_functions"] == 0
+                     and "get_weather" not in names())
+        status, out = call("POST", "/api/v1/tools/demo.weather/enable",
+                           {"on": "yes"})
+        report.check("the switch takes true or false only", status == 400)
+        call("POST", "/api/v1/tools/demo.weather/enable", {"on": True})
+        report.check("switched on again, it is back",
+                     names()[-1] == "get_weather")
+
+        clash = _pair("demo.other", "Other", "get_weather")
+        status, out = install(clash)
+        report.check("two tools cannot have a function of the same name",
+                     status == 409 and "get_weather" in out["error"],
+                     str(out))
+
+        install(_pair("demo.two", "Two", "say_a", "say_b"))
+        status, out = install(_pair("demo.three", "Three", "say_c", "say_d"))
+        report.check("the fifth function is allowed, and the page is told to "
+                     "warn", status == 201 and out["enabled_functions"] == 5
+                     and out["enabled_functions"] >= out["warn_from"])
+        status, out = install(_pair("demo.four", "Four", "say_e", "say_f"))
+        report.check("one that would make seven is installed switched off",
+                     status == 201 and out["tool"]["enabled"] is False
+                     and out["enabled_functions"] == 5, str(out))
+        status, out = call("POST", "/api/v1/tools/demo.four/enable",
+                           {"on": True})
+        report.check("and switching it on is refused until one is off",
+                     status == 409 and "Switch one off" in out["error"],
+                     str(out))
+        call("POST", "/api/v1/tools/demo.weather/enable", {"on": False})
+        status, out = call("POST", "/api/v1/tools/demo.four/enable",
+                           {"on": True})
+        report.check("six can be on at once",
+                     status == 200 and out["enabled_functions"] == 6
+                     and len(names()) == 14, str(names()))
+
+        again = store_mod.ToolStore(store_mod.default_root(data))
+        report.check("what is switched on survives a restart",
+                     sorted(f.spec.name for f in again.functions())
+                     == ["say_a", "say_b", "say_c", "say_d", "say_e",
+                         "say_f"], str([f.spec.name
+                                        for f in again.functions()]))
+
+        status, out = call("GET", "/api/v1/privacy/export")
+        mine = {t["id"]: t for t in out.get("tools", [])}
+        report.check("an export lists the tools and what each has kept",
+                     status == 200 and len(mine) == 4
+                     and mine["demo.weather"]["stored"] == {"asked": 1},
+                     str(out.get("tools")))
+
+        with open(os.path.join(data, "tools", "installed", "demo.two",
+                               "tool.json"), "w", encoding="utf-8") as fh:
+            fh.write("{ not json")
+        status, out = call("POST", "/api/v1/tools/demo.three/enable",
+                           {"on": False})
+        broken = [t for t in out["installed"] if t["id"] == "demo.two"][0]
+        report.check("a tool that no longer loads is listed with the reason "
+                     "and left out", bool(broken.get("error"))
+                     and broken["enabled"] is False
+                     and "say_a" not in names() and "say_e" in names(),
+                     str(broken))
+
+        status, out = call("DELETE", "/api/v1/tools/demo.weather")
+        report.check("removing a tool removes what it kept too",
+                     status == 200 and not os.path.exists(folder)
+                     and not os.path.exists(kept)
+                     and all(t["id"] != "demo.weather"
+                             for t in out["installed"]))
+        status, out = call("DELETE", "/api/v1/tools/demo.two")
+        report.check("a broken one can be removed", status == 200)
+        status, out = call("DELETE", "/api/v1/tools/..")
+        report.check("there is no removing what is not installed",
+                     status == 404, str(out))
+
+        report.check("only a tool on its way in may be a large request",
+                     headers.max_body("POST", "/api/v1/tools")
+                     == headers.max_body("POST", "/api/v1/tools/preview")
+                     > headers.MAX_BODY
+                     and headers.max_body("POST", "/api/v1/tools/x/enable")
+                     == headers.max_body("PATCH", "/api/v1/tools")
+                     == headers.MAX_BODY)
+
+        store_mod.wipe(data)
+        report.check("a factory reset removes every installed tool",
+                     not os.path.exists(os.path.join(data, "tools")))
+    finally:
+        rig.close()

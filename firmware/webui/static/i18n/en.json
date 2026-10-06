@@ -210,7 +210,7 @@
   "day_at": "{day} at {time}",
   "download": "Download",
   "download_hint": "Memories, reminders and usage as one file. Never your keys.",
-  "estimate_note": "Costs are estimates from the provider’s prices.",
+  "estimate_note": "Costs are estimates from the provider’s prices. The amount the provider charges may differ.",
   "face_asleep": "Trstenko is waiting for the PIN",
   "face_is": "Trstenko: {state}",
   "free_tier_switch": "This key is on a free tier",

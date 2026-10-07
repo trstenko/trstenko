@@ -45,6 +45,8 @@ def _numbers():
     for n, word in ((60, "šestdeset"), (70, "sedemdeset"), (80, "osemdeset"),
                     (90, "devetdeset")):
         sl[word] = n
+    # "na eno uro", "za en dan", "dva": the forms a sentence puts them in.
+    sl.update({"eno": 1, "en": 1, "eni": 1, "dva": 2})
     return words, sl
 
 
@@ -76,6 +78,7 @@ _EN_UNIT = {"second": 1, "seconds": 1, "minute": 60, "minutes": 60,
             "hour": 3600, "hours": 3600}
 _SL_UNIT = {"sekundo": 1, "sekundi": 1, "sekunde": 1, "sekund": 1,
             "minuto": 60, "minuti": 60, "minute": 60, "minut": 60,
+            "min": 60,
             "uro": 3600, "uri": 3600, "ure": 3600, "ur": 3600}
 
 _PATTERNS = {
@@ -106,15 +109,15 @@ _PATTERNS = {
             (r"glasnost na %s(?: odstotkov| odstotka| odstotek| %%)?" % _N,
              "n"),
         ],
-        STOP: [(r"(?:ustavi|prekliči|prekliči|preklici|nič|nic|pozabi)",
-                None)],
-        TIME: [(r"koliko je ura", None), (r"koliko je ure", None)],
+        STOP: [(r"(?:ustavi|prekliči|preklici|pozabi)", None)],
+        TIME: [(r"koliko je ura", None)],
         TIMER: [(r"nastavi časovnik na %s (?P<u>\w+)" % _N, "n"),
                 (r"časovnik na %s (?P<u>\w+)" % _N, "n"),
                 (r"nastavi casovnik na %s (?P<u>\w+)" % _N, "n")],
-        ACK: [(r"(?:v redu|ustavi|hvala|razumem)", None)],
-        SNOOZE: [(r"odloži(?: za %s (?P<u>\w+))?" % _N, "n"),
-                 (r"odlozi(?: za %s (?P<u>\w+))?" % _N, "n")],
+        ACK: [(r"(?:v redu|hvala|razumem|"
+               r"ustavi(?: alarm| časovnik| casovnik)?)", None)],
+        SNOOZE: [(r"(?:odloži|odlozi|zaspi)(?: za %s (?P<u>\w+))?" % _N,
+                  "n")],
     },
 }
 _COMPILED = {
@@ -199,7 +202,7 @@ def clock_line(wall, tz, synced, strings, lang="en"):
     if not synced:
         return strings("time_unknown")
     local = sched_clock.to_local(wall, tz)
-    return strings("time_is", time=speech.spoken_time(local, lang))
+    return strings("time_is", time=speech.clock_time(local, lang))
 
 
 def run(intent, registry, tool_ctx, strings, wall, tz, synced=True,

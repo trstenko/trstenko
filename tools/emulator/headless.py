@@ -3265,15 +3265,28 @@ def scenario_spoken_time(report, root):
 
     sl = [(at(18, 0), "ob šestih zvečer"), (at(7, 0), "ob sedmih zjutraj"),
           (at(7, 30), "ob pol osmih zjutraj"),
-          (at(15, 5), "ob treh in pet minut popoldne"),
-          (at(15, 1), "ob treh in ena minuta popoldne"),
-          (at(15, 22), "ob treh in dvaindvajset minut popoldne"),
+          (at(15, 5), "ob tri in pet minut popoldne"),
+          (at(15, 1), "ob tri in ena minuta popoldne"),
+          (at(15, 22), "ob tri in dvaindvajset minut popoldne"),
+          (at(7, 15), "ob sedem in petnajst minut zjutraj"),
+          (at(0, 30), "ob pol enih ponoči"),
           (at(12, 0), "opoldne"), (at(0, 0), "ob polnoči"),
           (at(1, 0), "ob eni ponoči")]
     for when, words in sl:
         report.check("Slovenian %s is '%s'" % (when.strftime("%H:%M"), words),
                      speech.spoken_time(when, "sl") == words,
                      speech.spoken_time(when, "sl"))
+    clock = [(at(18, 0), "šest zvečer"), (at(7, 15),
+                                           "sedem in petnajst minut zjutraj"),
+             (at(18, 30), "pol sedmih zvečer"), (at(12, 0), "poldne"),
+             (at(0, 0), "polnoč"), (at(13, 0), "ena popoldne")]
+    for when, words in clock:
+        report.check("the Slovenian clock at %s says '%s', with no 'ob'"
+                     % (when.strftime("%H:%M"), words),
+                     speech.clock_time(when, "sl") == words,
+                     speech.clock_time(when, "sl"))
+    report.check("the English clock is unchanged",
+                 speech.clock_time(at(18, 0)) == "six in the evening")
     report.check("Slovenian gives 'jutri' for tomorrow",
                  speech.spoken_when(at(7, 0, 3), now, "sl")
                  == "jutri ob sedmih zjutraj")

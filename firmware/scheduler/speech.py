@@ -4,11 +4,11 @@ A reminder is confirmed aloud ("OK, tomorrow at seven in the morning") and read
 out when it is due. Both need a time spoken the way a person says it, not
 "07:00" run through a speech synthesiser.
 
-The English is checked by the tests. **The Slovenian is hand-written and not
-yet reviewed by a native speaker**: the locative hour forms and the numerals
-are standard, but the choices of phrasing (when to say "pol", how to say
-minutes) are mine. It wants a read-through before the Slovenian voice ships
-(milestone M5), and it is written as plain tables so that review is easy.
+The English is checked by the tests. The Slovenian was read by a native
+speaker on 2026-10-07 (review batch `sl-time`), who changed two things: with
+minutes the hour is the plain numeral ("ob sedem in petnajst minut", not
+"ob sedmih in ..."), and half past twelve is "ob pol enih". It is written as
+plain tables so that the next review is as easy.
 """
 
 # ---- English ----
@@ -87,8 +87,11 @@ def _day_en(local, now):
 _HOUR_LOC = ["dvanajstih", "eni", "dveh", "treh", "štirih", "petih", "šestih",
              "sedmih", "osmih", "devetih", "desetih", "enajstih"]
 # "pol sedmih": half past six is "half of the seventh", genitive.
-_HOUR_GEN = ["dvanajstih", "ene", "dveh", "treh", "štirih", "petih", "šestih",
+_HOUR_GEN = ["dvanajstih", "enih", "dveh", "treh", "štirih", "petih", "šestih",
              "sedmih", "osmih", "devetih", "desetih", "enajstih"]
+# "ob sedem in petnajst minut", and "ura je šest": the plain numeral.
+_HOUR_NOM = ["dvanajst", "ena", "dve", "tri", "štiri", "pet", "šest", "sedem",
+             "osem", "devet", "deset", "enajst"]
 
 _UNITS_SL = ["", "ena", "dve", "tri", "štiri", "pet", "šest", "sedem",
              "osem", "devet"]
@@ -152,7 +155,25 @@ def _time_sl(dt):
     elif m == 30:
         words = "ob pol %s" % _HOUR_GEN[nxt]
     else:
-        words = "ob %s in %s" % (_HOUR_LOC[h12], _minutes_sl(m))
+        words = "ob %s in %s" % (_HOUR_NOM[h12], _minutes_sl(m))
+    return "%s %s" % (words, _period_sl(dt.hour))
+
+
+def _clock_sl(dt):
+    """The time as an answer to "koliko je ura": "šest zvečer", with no
+    "ob", which belongs to when something happens."""
+    if dt.hour == 0 and dt.minute == 0:
+        return "polnoč"
+    if dt.hour == 12 and dt.minute == 0:
+        return "poldne"
+    h12 = dt.hour % 12
+    m = dt.minute
+    if m == 0:
+        words = _HOUR_NOM[h12]
+    elif m == 30:
+        words = "pol %s" % _HOUR_GEN[(dt.hour + 1) % 12]
+    else:
+        words = "%s in %s" % (_HOUR_NOM[h12], _minutes_sl(m))
     return "%s %s" % (words, _period_sl(dt.hour))
 
 
@@ -176,6 +197,11 @@ def spoken_time(local, lang="en"):
     """'six in the evening', 'ob šestih zvečer'. `local` is a datetime in the
     owner's zone."""
     return _time_sl(local) if lang == "sl" else _time_en(local)
+
+
+def clock_time(local, lang="en"):
+    """What the clock says now, to follow "It is" or "Zdaj je"."""
+    return _clock_sl(local) if lang == "sl" else _time_en(local)
 
 
 def spoken_when(local, now, lang="en"):

@@ -20,8 +20,11 @@ letting a false "done" out: a held sentence that turns out to be true is only
 late.
 
 Slovenian patterns were written with the phrases the evaluation recorded
-("To bom uredil", "Zbudil te bom", "To si bom zapomnil"); like the rest of the
-device's Slovenian they want a native speaker's eye.
+("To bom uredil", "Zbudil te bom", "To si bom zapomnil"). They have **not**
+been read by a native speaker: the owner looked at the list on 2026-10-07 and
+left it to be filled in, so the forms added that day (adding, noting,
+removing, changing, "narejeno", a bare "takoj") are the same author's. A
+phrase heard live with nothing behind it is the evidence to add the next one.
 """
 
 import re
@@ -71,6 +74,14 @@ _PATTERNS = {
         # "to bom uredil", "to bo urejeno", "urejeno"
         r"\b(?:uredil|uredila|urejeno)\b",
         r"\b(?:znižal|zvišal|povečal|zmanjšal)a?\b",
+        # "dodal sem opomnik", "opomnik je dodan", "ustvarjeno", "zabeležil
+        # sem", "odstranil sem", "spremenila sem glasnost", "opozoril te bom"
+        r"\b(?:dodal|dodala|dodan[oa]?|ustvaril|ustvarila|ustvarjen[oa]?|"
+        r"zabeležil|zabeležila|zabeležen[oa]?|odstranil|odstranila|"
+        r"spremenil|spremenila|spremenjen[oa]?|opozoril|opozorila|opozorim)"
+        r"\b",
+        # "Narejeno.", "Opravljeno.", "Končano."
+        r"\b(?:narejeno|opravljeno|končano)\b",
         # The same in the present, as the second evaluation heard it with no
         # tool behind it: "Že nižam.", "Zmanjšujem glasnost.", "Že delam
         # tišje.", "Seveda, govorim tišje.", "Seveda, takoj."
@@ -87,8 +98,8 @@ _PATTERNS = {
         # "zbudi me čez uro in pol"): a yes with nothing behind it.
         r"^bom\b",
         r"\b(?:uredim|poskrbim|naredim)\b",
-        r"^(?:prav|velja|v redu|seveda|okej|ok|dogovorjeno|jasno|razumem)"
-        r"[.!]?$",
+        r"^(?:prav|velja|v redu|seveda|okej|ok|dogovorjeno|jasno|razumem|"
+        r"takoj)[.!]?$",
     ),
 }
 

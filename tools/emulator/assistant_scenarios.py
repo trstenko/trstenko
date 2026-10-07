@@ -2825,7 +2825,11 @@ def scenario_loop_promises(report, root):
                "Jutri nimaš nobenih opomnikov ali shranjenih načrtov.",
                "Jutri nimaš shranjenih nobenih opomnikov.",
                # The third: "Že tišje." and "Jasno. Pretegnem se!"
-               "Že tišje.", "Jasno.")
+               "Že tišje.", "Jasno.",
+               # Added on 2026-10-07 by the author, not heard live.
+               "Dodala sem opomnik.", "Opomnik je dodan.", "Zabeleženo.",
+               "Odstranil sem časovnik.", "Spremenila sem glasnost.",
+               "Opozoril te bom ob sedmih.", "Narejeno.", "Takoj.")
     not_slovene = ("Kdaj pa želiš, da te opomnim?", "Ni za kaj.",
                    "Žal ne morem predvajati glasbe.",
                    "Ali želiš, da govorim tišje?", "Seveda, Ljubljana.",
@@ -3464,12 +3468,22 @@ def scenario_intents(report, root):
           ("glasnost na 40 odstotkov", ("volume", {"level": 40})),
           ("koliko je ura", ("time", {})),
           ("nastavi časovnik na pet minut", ("timer", {"seconds": 300})),
-          ("nastavi časovnik na eno uro".replace("eno", "ena"),
-           ("timer", {"seconds": 3600})),
+          ("nastavi časovnik na eno uro", ("timer", {"seconds": 3600})),
+          ("časovnik na pet min", ("timer", {"seconds": 300})),
           ("ustavi", ("stop", {})))
     for text, want in sl:
         report.check("in Slovenian, %r means %s" % (text, want[0]),
                      m(text, "sl") == want, str(m(text, "sl")))
+    report.check("what the review said nobody says goes to the model",
+                 m("nič", "sl") is None and m("koliko je ure", "sl") is None)
+    report.check("in the Slovenian alert window, 'ustavi alarm' and 'zaspi'",
+                 m("ustavi alarm", "sl", True) == ("ack", {})
+                 and m("ustavi časovnik", "sl", True) == ("ack", {})
+                 and m("zaspi", "sl", True) == ("snooze", {"minutes": 5})
+                 and m("zaspi za 5 min", "sl", True)
+                 == ("snooze", {"minutes": 5})
+                 and m("zaspi za deset minut", "sl", True)
+                 == ("snooze", {"minutes": 10}))
     report.check("a Slovenian sentence is not matched by the English list",
                  m("glasneje", "en") is None)
     report.check("in the Slovenian alert window, snooze and acknowledge",

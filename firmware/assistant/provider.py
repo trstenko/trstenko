@@ -398,7 +398,7 @@ class ChatClient:
 
     def _body(self, model, messages, tools, max_output):
         body = {"model": model, "messages": messages, "stream": True}
-        body.update(self.provider.params(max_output))
+        body.update(self.provider.params(max_output, model))
         if tools:
             body["tools"] = tools
         if self.provider.stream_usage == "stream_options":

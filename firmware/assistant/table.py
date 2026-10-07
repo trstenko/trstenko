@@ -43,9 +43,9 @@ PROVIDER_FIELDS = {
     "label", "base_url", "allow_http", "auth", "schema_flavour",
     "audio_in_chat", "default_model", "models", "params", "drop_params",
     "stream_usage", "headers", "stt", "free_tier", "languages",
-    "key_help_url", "verified",
+    "key_help_url", "verified", "model_params",
 }
-REQUIRED_FIELDS = PROVIDER_FIELDS - {"allow_http"}
+REQUIRED_FIELDS = PROVIDER_FIELDS - {"allow_http", "model_params"}
 
 # A host the owner typed on the setup page, going into a URL. Letters, digits,
 # dots and hyphens: nothing that can turn it into a path, a query, a user or a
@@ -154,6 +154,27 @@ def check_provider(name, row):
         if clash:
             bad("drop_params", "also sent in params: %s" % ", ".join(clash))
 
+    # What one model wants differently from the row: Gemini 3.8 Flash refuses
+    # the "minimal" reasoning effort its smaller sibling takes.
+    per_model = row.get("model_params", {})
+    if not isinstance(per_model, dict) or not all(
+            isinstance(v, dict) and all(isinstance(k, str) for k in v)
+            for v in per_model.values()):
+        bad("model_params", "must map a model to an object of parameters")
+    else:
+        if isinstance(models, list):
+            strangers = sorted(set(per_model) - set(m for m in models
+                                                    if isinstance(m, str)))
+            if strangers:
+                bad("model_params", "%s is not one of its models"
+                    % strangers[0])
+        for extra in per_model.values():
+            if any(k in TOKEN_PARAMS for k in extra):
+                bad("model_params", "the reply length belongs in params")
+            if isinstance(drop, list) and set(extra) & set(
+                    d for d in drop if isinstance(d, str)):
+                bad("model_params", "also listed in drop_params")
+
     headers = row["headers"]
     if not isinstance(headers, dict) or not all(
             _text(k) and isinstance(v, str) for k, v in headers.items()):
@@ -219,6 +240,7 @@ class Provider:
         self.needs_key = row["auth"] == "bearer"
         self._base_url = row["base_url"]
         self._params = copy.deepcopy(row["params"])
+        self._model_params = copy.deepcopy(row.get("model_params") or {})
         self._drop = frozenset(row["drop_params"])
         self._headers = dict(row["headers"])
         self.token_param = next(k for k in TOKEN_PARAMS if k in self._params)
@@ -240,10 +262,12 @@ class Provider:
             raise TableError("%s: that is not an address" % self.label)
         return self._base_url.replace("{host}", host).rstrip("/")
 
-    def params(self, max_output_tokens=None):
+    def params(self, max_output_tokens=None, model=None):
         """What goes into every request besides the messages and tools, with
-        the owner's reply-length cap in place of the table's default."""
+        the owner's reply-length cap in place of the table's default, and
+        whatever `model` wants differently from the row."""
         params = copy.deepcopy(self._params)
+        params.update(copy.deepcopy(self._model_params.get(model) or {}))
         if max_output_tokens is not None:
             params[self.token_param] = int(max_output_tokens)
         return params

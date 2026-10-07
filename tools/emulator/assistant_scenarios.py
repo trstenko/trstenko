@@ -106,6 +106,21 @@ def scenario_tables(report, root):
                  and gem.params()["max_tokens"] == 300
                  and providers.get("openai").token_param
                  == "max_completion_tokens")
+    report.check("a model can want one parameter differently from its row",
+                 gem.params(model="gemini-3.8-flash")["reasoning_effort"]
+                 == "low"
+                 and gem.params(model=gem.default_model)["reasoning_effort"]
+                 == "minimal"
+                 and gem.params(120, "gemini-3.8-flash")["max_tokens"] == 120)
+    odd = dict(shipped, gemini=dict(
+        shipped["gemini"], model_params={"gemini-9": {"x": 1}}))
+    long = dict(shipped, gemini=dict(
+        shipped["gemini"],
+        model_params={"gemini-3.8-flash": {"max_tokens": 9}}))
+    report.check("but only one of its models, and not the reply length",
+                 says(table.check_providers(odd, PROVIDERS), "model_params")
+                 and says(table.check_providers(long, PROVIDERS),
+                          "model_params"))
     report.check("params come back as a copy nobody can change the table with",
                  gem.params().update(x=1) is None
                  and "x" not in gem.params())

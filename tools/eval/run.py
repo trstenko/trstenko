@@ -42,6 +42,10 @@ RESULTS = os.path.join(HERE, "results")
 DEFAULT_NOW = "2026-10-02T15:10"
 DEFAULT_TZ = "Europe/Ljubljana"
 KEY_ENV = "TRSTENKO_EVAL_KEY"
+# Failures that say nothing about the case in hand.
+STOP_ON = ("bad_request", "auth", "quota", "timeout", "server", "network",
+           "rate_limited")
+STOP_AFTER = 3
 
 
 def read_key(provider, secrets_path=None, environ=os.environ):
@@ -144,6 +148,7 @@ def run_all(cases, provider, model, key, pause=0.0, root=None, fakes=(),
     script the fake provider; `say(line)` reports progress."""
     root = root or tempfile.mkdtemp(prefix="trstenko-eval-")
     rows = []
+    refused = 0
     for number, case in enumerate(cases, 1):
         rig = make_rig(root, "case%03d" % number, case, provider, key, fakes)
         try:
@@ -162,6 +167,15 @@ def run_all(cases, provider, model, key, pause=0.0, root=None, fakes=(),
         if say is not None:
             say("%3d %s  %s" % (number, "ok  " if score_mod.passed(checks)
                                 else "FAIL", case["say"]))
+        # The same refusal three times running is the provider or the
+        # request, not the cases: a day's free requests went this way once.
+        kind = outcome.error.split(":")[0]
+        refused = refused + 1 if kind in STOP_ON else 0
+        if refused >= STOP_AFTER:
+            if say is not None:
+                say("stopped: %d cases in a row failed with %s"
+                    % (refused, kind))
+            break
         if pause and not outcome.local and number < len(cases):
             sleep(pause)
     return rows

@@ -215,6 +215,17 @@ def scenario_eval_runner(report, root):
     text = score.report("gemini", "fake", rows) + "\n".join(lines)
     report.check("the key is in no report and no progress line",
                  FAKE_KEY not in text and len(lines) == len(cases))
+    said = []
+    refused = eval_run.run_all(
+        [{"say": "tell me story %d" % n, "expect_tool": None}
+         for n in range(6)], "gemini", "", "",
+        root=os.path.join(root, "evalstop"), fakes=("gemini",),
+        before=lambda rig, case: rig.fake.queue(
+            fp.error(400, "invalid_argument", "not supported")),
+        say=said.append)
+    report.check("a provider that refuses three cases running stops the run",
+                 len(refused) == eval_run.STOP_AFTER
+                 and said[-1].startswith("stopped"), str(said))
     report.check("the key is read from a secrets file or the environment",
                  eval_run.read_key("gemini", None, {eval_run.KEY_ENV: "abc"})
                  == "abc" and eval_run.read_key("gemini", None, {}) == "")

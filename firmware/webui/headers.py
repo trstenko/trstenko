@@ -10,7 +10,11 @@
   destination.
 
 There are no cookies. The token travels in the Authorization header, so
-cross-site request forgery has nothing to ride on.
+cross-site request forgery has nothing to ride on -- except `/api/auth`,
+which needs no token. Any web page the owner visits can send it a "simple"
+cross-origin POST (`text/plain`, no preflight) and burn through the PIN
+lockout. A body therefore has to say it is JSON: a browser will only send
+that header cross-origin after a preflight, and this server answers none.
 """
 
 SECURITY_HEADERS = {
@@ -36,3 +40,12 @@ def max_body(method, path):
     if method == "POST" and "/" + path.strip("/") in TOOL_PATHS:
         return MAX_TOOL_BODY
     return MAX_BODY
+
+
+def json_body_ok(content_type, raw):
+    """Whether a request body may be read. An empty body needs no type; any
+    other must be declared `application/json`."""
+    if not (raw or b"").strip():
+        return True
+    kind = (content_type or "").split(";", 1)[0].strip().lower()
+    return kind == "application/json"

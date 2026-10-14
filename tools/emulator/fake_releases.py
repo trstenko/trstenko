@@ -54,6 +54,9 @@ class FakeReleases(ReleaseSource):
         self.seed, self.public_key = _keypair()
         self.sign_releases = True
         self.break_signature = False
+        # A signed manifest for some other version, attached to this
+        # release: an old signed release republished under a new tag.
+        self.manifest_version = None
 
         self.offline = False
         self.fail_download = False
@@ -94,7 +97,7 @@ class FakeReleases(ReleaseSource):
         from tools.release import sign_manifest
 
         manifest = {
-            "version": self.version,
+            "version": self.manifest_version or self.version,
             "urgency": self.urgency,
             "summary": DEFAULT_SUMMARIES.get(self.urgency, ""),
             "requires_base": self.requires_base,

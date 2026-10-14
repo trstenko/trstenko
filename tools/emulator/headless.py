@@ -575,8 +575,18 @@ def scenario_signing(report, root):
                  "trust" in rig.updater.error or "signed" in rig.updater.error,
                  rig.updater.error[:70])
 
-    # Signed by somebody else entirely.
+    # A genuine signature, but over the manifest of another release: an old
+    # signed release republished under a newer tag.
     rig.releases.break_signature = False
+    rig.releases.manifest_version = "0.7.0"
+    rig.updater.check(force=True)
+    rig.settle(lambda: rig.updater.state != "checking")
+    report.check("a signed manifest for another version is refused",
+                 rig.updater.state == "blocked"
+                 and "0.7.0" in rig.updater.error, rig.updater.error[:70])
+    rig.releases.manifest_version = None
+
+    # Signed by somebody else entirely.
     from tools.release import keypair
     rig.releases.seed = keypair()[0]
     rig.updater.check(force=True)
@@ -847,6 +857,14 @@ def scenario_pairing(report, root):
     wrong_ok = status == 401 or (status == 429)
     report.check("a wrong PIN gets nothing", wrong_ok and "token" not in body,
                  str(status))
+
+    # Sending no PIN at all is not a guess. Anything on the network (or a
+    # web page the owner has open) could otherwise hold the lockout shut.
+    for _ in range(10):
+        api.dispatch("POST", "/api/auth", {})
+    report.check("a request with no PIN does not count towards the lockout",
+                 auth.locked_for == 0 and auth.status()["failures"] == 1,
+                 str(auth.status()))
 
     # Keep guessing. The device has to stop answering rather than let a
     # script walk through a million combinations.
@@ -3774,6 +3792,17 @@ def scenario_web_servers(report, root):
         report.check("standard-library server: an oversized body is a 413, "
                      "before anyone reads it", response.status == 413)
         conn.close()
+
+        # What a web page elsewhere can send without a preflight: text/plain.
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("POST", "/api/auth", b'{"pin": "000000"}',
+                     {"Content-Type": "text/plain"})
+        response = conn.getresponse()
+        response.read()
+        report.check("standard-library server: a body not sent as JSON is "
+                     "refused (no cross-site PIN guessing)",
+                     response.status == 415, str(response.status))
+        conn.close()
     server.shutdown()
     server.server_close()
 
@@ -3810,6 +3839,11 @@ def scenario_web_servers(report, root):
                           headers={"Authorization": "Bearer " + rig.token})
         report.check("Flask server: an oversized body is a 413",
                      big.status_code == 413)
+        plain = client.post("/api/auth", data='{"pin": "000000"}',
+                            content_type="text/plain")
+        report.check("Flask server: a body not sent as JSON is refused "
+                     "(no cross-site PIN guessing)",
+                     plain.status_code == 415, str(plain.status_code))
     rig.rig.close()
 
 

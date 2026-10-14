@@ -42,6 +42,7 @@ one glance at the screen.
 import hmac
 import os
 import secrets
+import threading
 import time
 
 PIN_FILE = "pairing-pin"
@@ -80,6 +81,10 @@ class Auth:
         self._tokens = {}
         self._failures = 0
         self._locked_until = 0.0
+        # The server answers each request on its own thread. Without this, a
+        # burst of guesses can all read "not locked" before the first one
+        # counts its failure, and the lockout lets the whole burst through.
+        self._lock = threading.Lock()
         self.pin = self._load_or_create_pin()
 
     # ---- the PIN ----
@@ -151,6 +156,10 @@ class Auth:
 
     def verify(self, pin):
         """(token, seconds_to_wait). A wrong PIN gives (None, wait)."""
+        with self._lock:
+            return self._verify(pin)
+
+    def _verify(self, pin):
         wait = self.locked_for
         if wait > 0:
             return None, wait
@@ -178,6 +187,10 @@ class Auth:
         """Ask for the PIN again before something that cannot be undone. The
         same lockout as pairing, but no new token and no 'paired' line.
         Returns (ok, seconds_to_wait)."""
+        with self._lock:
+            return self._confirm(pin)
+
+    def _confirm(self, pin):
         wait = self.locked_for
         if wait > 0:
             return False, wait

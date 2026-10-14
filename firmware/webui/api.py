@@ -135,6 +135,10 @@ class UpdateApi:
         """
         if self.auth is None:
             return 200, {"token": "", "note": "this device is not locked"}
+        # No PIN is not a guess. Counting it would let anything that can
+        # reach this address hold the lockout shut without trying a PIN.
+        if not isinstance(body.get("pin"), str) or not body["pin"]:
+            return 400, {"error": "send the PIN shown on the device"}
         token, wait = self.auth.verify(body.get("pin"))
         if token:
             return 200, {"token": token}

@@ -18,7 +18,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qsl
 
-from .headers import SECURITY_HEADERS, max_body
+from .headers import SECURITY_HEADERS, json_body_ok, max_body
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 
@@ -115,6 +115,11 @@ class _Handler(BaseHTTPRequestHandler):
                        "application/json")
             return
         raw = self.rfile.read(length) if length else b"{}"
+        if length and not json_body_ok(self.headers.get("Content-Type"), raw):
+            self._send(415, json.dumps(
+                {"error": "send the body as application/json"}).encode(),
+                "application/json")
+            return
         try:
             body = json.loads(raw or b"{}")
         except ValueError:
@@ -132,7 +137,8 @@ class _Handler(BaseHTTPRequestHandler):
     def _static(self, path):
         name = "index.html" if path in ("/", "") else path.lstrip("/")
         target = os.path.normpath(os.path.join(STATIC, name))
-        if not target.startswith(STATIC) or not os.path.isfile(target):
+        if not target.startswith(STATIC + os.sep) \
+                or not os.path.isfile(target):
             self._send(404, b"not found", "text/plain")
             return
         ext = os.path.splitext(target)[1]

@@ -795,6 +795,18 @@ def scenario_bootcheck(report, root):
     report.check("the marker is gone afterwards",
                  rig.updater.guard.read() is None)
 
+    # The bin/ copy outlives the release that wrote the marker. A field a
+    # later release adds must not hide the trial from it.
+    with open(layout.marker, "w", encoding="utf-8") as fh:
+        json.dump({"new": "0.6.0", "previous": "0.4.0", "at": 1,
+                   "attempts": 1, "max_attempts": 3, "added_later": True},
+                  fh)
+    pending = rig.updater.guard.read()
+    report.check("a marker with a field added later is still read",
+                 pending is not None and pending.new == "0.6.0"
+                 and pending.attempts == 1, repr(pending))
+    os.remove(layout.marker)
+
 
 def scenario_base_image(report, root):
     """The honest limit: a release that needs a newer OS is refused, not
@@ -3906,6 +3918,21 @@ def scenario_web_servers(report, root):
                      "refused (DNS rebinding), the device's own is not",
                      rebound.status_code == 421 and own.status_code == 200,
                      "%s %s" % (rebound.status_code, own.status_code))
+        # A name the home router hands out is the device's own; the same
+        # ending inside a public name is not.
+        got = {}
+        for host in ("trstenko.lan", "trstenko.home.arpa", "trstenko",
+                     "trstenko.lan.example.com", "trstenko.local.evil.com"):
+            got[host] = client.get("/api/v1/info", headers={
+                "Host": host,
+                "Authorization": "Bearer " + rig.token}).status_code
+        report.check("Flask server: router names (.lan, .home.arpa, no dot) "
+                     "are served, public names ending elsewhere are not",
+                     got["trstenko.lan"] == 200
+                     and got["trstenko.home.arpa"] == 200
+                     and got["trstenko"] == 200
+                     and got["trstenko.lan.example.com"] == 421
+                     and got["trstenko.local.evil.com"] == 421, str(got))
     rig.rig.close()
 
 

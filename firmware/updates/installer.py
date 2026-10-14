@@ -40,6 +40,8 @@ early would have meant deciding the SD layout before the enclosure was.
 import hashlib
 import json
 import os
+import posixpath
+import re
 import shutil
 import subprocess
 import tarfile
@@ -384,11 +386,14 @@ def _check_tar_entries(members):
             target = member.linkname.replace("\\", "/")
             if member.issym():
                 # Relative to the link's own folder.
-                base = os.path.dirname(member.name.replace("\\", "/"))
-                target = os.path.normpath(os.path.join(base, target))
+                base = posixpath.dirname(member.name.replace("\\", "/"))
+                target = posixpath.normpath(posixpath.join(base, target))
             else:
-                target = os.path.normpath(target)
-            if target.startswith("/") or target == ".." \
+                target = posixpath.normpath(target)
+            # Tar names are POSIX paths on every platform; os.path would
+            # turn them into backslashes on Windows and miss "../".
+            if target.startswith("/") or re.match(r"^[A-Za-z]:", target) \
+                    or target == ".." \
                     or target.startswith("../"):
                 raise StagingError("the bundle links outside its directory: "
                                    "%r -> %r" % (member.name,

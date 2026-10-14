@@ -63,6 +63,15 @@ def _machine_names():
     return (name, name + ".local") if name else ()
 
 
+# Endings only a home network's own DNS can answer for: mDNS, the names
+# routers hand out (`trstenko.lan`, `trstenko.home`, `trstenko.home.arpa`),
+# and endings ICANN has reserved or will never delegate. Nobody can register
+# a public name under one of these, so a rebinding page cannot have one.
+# `.box` is not here: it is a real top-level domain (`fritz.box` is AVM's).
+PRIVATE_SUFFIXES = (".local", ".lan", ".home", ".home.arpa", ".internal",
+                    ".localdomain", ".corp")
+
+
 def host_allowed(host_header):
     """Whether a request naming this host is meant for the device, at any
     time, setup or not.
@@ -71,12 +80,14 @@ def host_allowed(host_header):
     later, resolves to this device: the browser then lets that page talk to
     the device as though it were its own. The browser still sends the page's
     own name in `Host`, so anything that is not an address, one of the
-    device's own names or an mDNS name is refused.
+    device's own names, a name with no dot (the router's DNS, `trstenko`) or
+    a name under a private ending is refused.
     """
-    host = host_of(host_header)
+    host = host_of(host_header).rstrip(".")
     if not host:
         return True       # HTTP/1.0; a browser always sends one
-    if host in OWN_HOSTS or host.endswith(".local"):
+    if host in OWN_HOSTS or "." not in host \
+            or host.endswith(PRIVATE_SUFFIXES):
         return True
     try:
         ipaddress.ip_address(host.strip("[]"))

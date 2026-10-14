@@ -96,6 +96,11 @@ class UpdateApi:
             return None
         return captive.redirect(host_header, setup.state)
 
+    def host_allowed(self, host_header):
+        """False for a request that names somebody else's host outside the
+        captive redirect: DNS rebinding (`captive.host_allowed`)."""
+        return captive.host_allowed(host_header)
+
     def stream(self, path, token=None):
         """`GET /api/v1/events`, which is the one answer that is not a dict.
         Returns None when `path` is not the stream, else (status, body)."""
@@ -135,6 +140,10 @@ class UpdateApi:
         """
         if self.auth is None:
             return 200, {"token": "", "note": "this device is not locked"}
+        # No PIN is not a guess. Counting it would let anything that can
+        # reach this address hold the lockout shut without trying a PIN.
+        if not isinstance(body.get("pin"), str) or not body["pin"]:
+            return 400, {"error": "send the PIN shown on the device"}
         token, wait = self.auth.verify(body.get("pin"))
         if token:
             return 200, {"token": token}

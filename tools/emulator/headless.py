@@ -57,10 +57,14 @@ class Rig:
 
         self.releases = FakeReleases(kbps=1e9, clock=lambda: self.t,
                                      **release_kw)
+        # Trusts the fake feed's key, as the emulator's window does: a
+        # device that ships will have one, and only a signed urgent release
+        # goes ahead without asking.
         self.config = UpdateConfig(repo="emulator/trstenko",
                                    data_root=data_root,
                                    install_root=data_root, auto_check=False,
-                                   urgent_grace_seconds=10.0)
+                                   urgent_grace_seconds=10.0,
+                                   extra_keys=[self.releases.public_key])
         self.events = []
         self.restarts = 0
         self.updater = self._manager()
@@ -575,8 +579,18 @@ def scenario_signing(report, root):
                  "trust" in rig.updater.error or "signed" in rig.updater.error,
                  rig.updater.error[:70])
 
-    # Signed by somebody else entirely.
+    # A genuine signature, but over the manifest of another release: an old
+    # signed release republished under a newer tag.
     rig.releases.break_signature = False
+    rig.releases.manifest_version = "0.7.0"
+    rig.updater.check(force=True)
+    rig.settle(lambda: rig.updater.state != "checking")
+    report.check("a signed manifest for another version is refused",
+                 rig.updater.state == "blocked"
+                 and "0.7.0" in rig.updater.error, rig.updater.error[:70])
+    rig.releases.manifest_version = None
+
+    # Signed by somebody else entirely.
     from tools.release import keypair
     rig.releases.seed = keypair()[0]
     rig.updater.check(force=True)
@@ -597,6 +611,17 @@ def scenario_signing(report, root):
                  rig.updater.release.signed is False
                  and "no trusted keys" in rig.updater.release.signature_note,
                  rig.updater.release.signature_note)
+
+    # "Urgent" in an unsigned release is a word anyone with write access to
+    # the release page could have typed. It is asked about, not scheduled.
+    rig.updater.cancel()
+    rig.releases.urgency = "urgent"
+    rig.updater.check(force=True)
+    rig.settle(lambda: rig.updater.state != "checking")
+    report.check("an unsigned urgent release asks instead of installing "
+                 "itself", rig.updater.state == "awaiting_consent"
+                 and rig.updater.status()["decision"] == "ask",
+                 rig.updater.state)
 
 
 def scenario_no_room(report, root):
@@ -770,6 +795,18 @@ def scenario_bootcheck(report, root):
     report.check("the marker is gone afterwards",
                  rig.updater.guard.read() is None)
 
+    # The bin/ copy outlives the release that wrote the marker. A field a
+    # later release adds must not hide the trial from it.
+    with open(layout.marker, "w", encoding="utf-8") as fh:
+        json.dump({"new": "0.6.0", "previous": "0.4.0", "at": 1,
+                   "attempts": 1, "max_attempts": 3, "added_later": True},
+                  fh)
+    pending = rig.updater.guard.read()
+    report.check("a marker with a field added later is still read",
+                 pending is not None and pending.new == "0.6.0"
+                 and pending.attempts == 1, repr(pending))
+    os.remove(layout.marker)
+
 
 def scenario_base_image(report, root):
     """The honest limit: a release that needs a newer OS is refused, not
@@ -821,6 +858,29 @@ def scenario_hostile_bundle(report, root):
     report.check("and nothing landed outside",
                  not os.path.exists(os.path.join(root, "escaped.txt")))
 
+    # A link out of the folder, then a file written through it. The names
+    # alone are clean; only the link's target gives it away.
+    outside = os.path.join(root, "hostile-outside")
+    os.makedirs(outside, exist_ok=True)
+    path = os.path.join(data, "evil-link.tar.gz")
+    with tar.open(path, "w:gz") as archive:
+        link = tar.TarInfo("through")
+        link.type = tar.SYMTYPE
+        link.linkname = outside
+        archive.addfile(link)
+        info = tar.TarInfo("through/escaped.txt")
+        info.size = 4
+        archive.addfile(info, io.BytesIO(b"evil"))
+    caught = ""
+    try:
+        installer.apply(Staged(path, "9.9.8", "", 0))
+    except StagingError as exc:
+        caught = str(exc)
+    report.check("a bundle linking out of its directory is refused, on any "
+                 "Python", "links outside" in caught, caught[:60])
+    report.check("and nothing landed through the link",
+                 not os.listdir(outside))
+
 
 def scenario_pairing(report, root):
     """The page is reachable by anyone on the same Wi-Fi. Without a lock,
@@ -847,6 +907,14 @@ def scenario_pairing(report, root):
     wrong_ok = status == 401 or (status == 429)
     report.check("a wrong PIN gets nothing", wrong_ok and "token" not in body,
                  str(status))
+
+    # Sending no PIN at all is not a guess. Anything on the network (or a
+    # web page the owner has open) could otherwise hold the lockout shut.
+    for _ in range(10):
+        api.dispatch("POST", "/api/auth", {})
+    report.check("a request with no PIN does not count towards the lockout",
+                 auth.locked_for == 0 and auth.status()["failures"] == 1,
+                 str(auth.status()))
 
     # Keep guessing. The device has to stop answering rather than let a
     # script walk through a million combinations.
@@ -3774,6 +3842,31 @@ def scenario_web_servers(report, root):
         report.check("standard-library server: an oversized body is a 413, "
                      "before anyone reads it", response.status == 413)
         conn.close()
+
+        # What a web page elsewhere can send without a preflight: text/plain.
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("POST", "/api/auth", b'{"pin": "000000"}',
+                     {"Content-Type": "text/plain"})
+        response = conn.getresponse()
+        response.read()
+        report.check("standard-library server: a body not sent as JSON is "
+                     "refused (no cross-site PIN guessing)",
+                     response.status == 415, str(response.status))
+        conn.close()
+
+        # DNS rebinding: somebody else's name, pointing at the device.
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.putrequest("POST", "/api/auth", skip_host=True)
+        conn.putheader("Host", "rebind.example.com")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", "17")
+        conn.endheaders(b'{"pin": "000000"}')
+        response = conn.getresponse()
+        response.read()
+        report.check("standard-library server: a request for another site's "
+                     "name is refused (DNS rebinding)",
+                     response.status == 421, str(response.status))
+        conn.close()
     server.shutdown()
     server.server_close()
 
@@ -3810,6 +3903,36 @@ def scenario_web_servers(report, root):
                           headers={"Authorization": "Bearer " + rig.token})
         report.check("Flask server: an oversized body is a 413",
                      big.status_code == 413)
+        plain = client.post("/api/auth", data='{"pin": "000000"}',
+                            content_type="text/plain")
+        report.check("Flask server: a body not sent as JSON is refused "
+                     "(no cross-site PIN guessing)",
+                     plain.status_code == 415, str(plain.status_code))
+        rebound = client.post("/api/auth", data='{"pin": "000000"}',
+                              content_type="application/json",
+                              headers={"Host": "rebind.example.com"})
+        own = client.get("/api/v1/info", headers={
+            "Host": "trstenko.local",
+            "Authorization": "Bearer " + rig.token})
+        report.check("Flask server: a request for another site's name is "
+                     "refused (DNS rebinding), the device's own is not",
+                     rebound.status_code == 421 and own.status_code == 200,
+                     "%s %s" % (rebound.status_code, own.status_code))
+        # A name the home router hands out is the device's own; the same
+        # ending inside a public name is not.
+        got = {}
+        for host in ("trstenko.lan", "trstenko.home.arpa", "trstenko",
+                     "trstenko.lan.example.com", "trstenko.local.evil.com"):
+            got[host] = client.get("/api/v1/info", headers={
+                "Host": host,
+                "Authorization": "Bearer " + rig.token}).status_code
+        report.check("Flask server: router names (.lan, .home.arpa, no dot) "
+                     "are served, public names ending elsewhere are not",
+                     got["trstenko.lan"] == 200
+                     and got["trstenko.home.arpa"] == 200
+                     and got["trstenko"] == 200
+                     and got["trstenko.lan.example.com"] == 421
+                     and got["trstenko.local.evil.com"] == 421, str(got))
     rig.rig.close()
 
 
@@ -3943,6 +4066,8 @@ def main(argv=None):
         ("third-party tools: the Tools card",
          extension_scenarios.scenario_extension_installed),
         ("the tool creator", extension_scenarios.scenario_toolmaker),
+        ("where a tool's process runs",
+         extension_scenarios.scenario_extension_isolation),
         ("the model evaluation: scoring", eval_scenarios.scenario_eval_scoring),
         ("the model evaluation: the runner, on the fake provider",
          eval_scenarios.scenario_eval_runner),

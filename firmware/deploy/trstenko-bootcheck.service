@@ -12,5 +12,29 @@ RemainAfterExit=no
 # the release is the broken thing.
 ExecStart=/usr/bin/python3 /opt/trstenko/bin/bootcheck.py /opt/trstenko
 
+# Only /opt/trstenko is its business: it moves the `current` link and
+# counts boots. It runs as the app's user, so a rollback script that has been
+# tampered with gains nothing it did not already have.
+User=trstenko
+Group=trstenko
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+ReadWritePaths=/opt/trstenko
+ReadOnlyPaths=/opt/trstenko/bin
+
 [Install]
 WantedBy=multi-user.target

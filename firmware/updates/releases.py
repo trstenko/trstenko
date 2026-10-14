@@ -108,9 +108,22 @@ class Release:
 
         self.signed, self.key_id, self.signature_note = signing.check(
             self.manifest, keys)
-        if self.signed:
-            self.signature_note = "signed by %s" % self.key_id
-        return self.signed
+        if not self.signed:
+            return False
+        # The signature covers the manifest, not the GitHub release around
+        # it. Without these, an old signed manifest and its bundle could be
+        # republished under a new tag, or the unsigned release body could
+        # make a signed release urgent.
+        if str(self.manifest.get("version", "")) != str(self.version):
+            self.signed = False
+            self.signature_note = (
+                "the signed manifest is for %s, not %s"
+                % (self.manifest.get("version") or "no version", self.version))
+            return False
+        urgency = str(self.manifest.get("urgency") or OPTIONAL).lower()
+        self.urgency = urgency if urgency in URGENCIES else OPTIONAL
+        self.signature_note = "signed by %s" % self.key_id
+        return True
 
 
 class ReleaseSource:

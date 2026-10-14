@@ -4,6 +4,13 @@ Description=Trstenko
 # this unit must resolve the symlink after it has finished, not before.
 After=network.target trstenko-bootcheck.service sound.target
 Requires=trstenko-bootcheck.service
+# Five failures in a minute is a release that does not work. Give up rather
+# than restart-looping: bootcheck counts those boots and rolls back, and a
+# tight loop only burns the SD card while it does. These belong here, in
+# [Unit]: under [Service] systemd ignores them, and the rollback never ran.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+OnFailure=trstenko-rollback.service
 
 [Service]
 # The firmware says READY=1 once it is up and then WATCHDOG=1 about once a
@@ -19,6 +26,21 @@ WorkingDirectory=/opt/trstenko/current
 ExecStart=/opt/trstenko/current/venv/bin/python -m firmware.main
 Environment=TRSTENKO_ROOT=/opt/trstenko
 Environment=TRSTENKO_DATA=/var/lib/trstenko
+# Third-party tools run through this socket, each call in a unit of its own
+# (trstenko-tool@.service). Set, it is the only way a tool runs.
+Environment=TRSTENKO_TOOL_SOCKET=/run/trstenko-tool.sock
+
+# Its own user, not root. Root can read every file on the card, the Wi-Fi
+# passwords NetworkManager keeps among them, and so could anything that ever
+# runs inside this process. What it needs beyond its own two directories is
+# the hardware, through the groups below, and three things done by
+# NetworkManager and systemd on its behalf, through
+# 50-trstenko-network.rules.
+User=trstenko
+Group=trstenko
+SupplementaryGroups=audio gpio spi video
+CapabilityBoundingSet=
+AmbientCapabilities=
 Restart=always
 RestartSec=3
 
@@ -37,19 +59,15 @@ RestrictNamespaces=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
-# The two it may write to: its own releases and its own data.
+# The two it may write to: its own releases and its own data. Not the
+# rollback script, which the boot units run: whatever could rewrite that
+# would choose what runs at the next boot.
 ReadWritePaths=/opt/trstenko /var/lib/trstenko
+ReadOnlyPaths=/opt/trstenko/bin
 # SPI, GPIO and the USB sound card.
 DeviceAllow=char-spi rw
 DeviceAllow=char-gpiochip rw
 DeviceAllow=char-snd rw
-
-# Five failures in a minute is a release that does not work. Give up rather
-# than restart-looping: bootcheck counts those boots and rolls back, and a
-# tight loop only burns the SD card while it does.
-StartLimitBurst=5
-StartLimitIntervalSec=60
-OnFailure=trstenko-rollback.service
 
 [Install]
 WantedBy=multi-user.target

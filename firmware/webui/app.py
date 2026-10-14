@@ -12,7 +12,7 @@ boot and show a face, so `firmware.webui` never imports this at module level.
 import json
 
 from .api import UpdateApi
-from .headers import MAX_TOOL_BODY, SECURITY_HEADERS, max_body
+from .headers import MAX_TOOL_BODY, SECURITY_HEADERS, json_body_ok, max_body
 
 
 def create_app(manager, device=None, auth=None):
@@ -36,6 +36,11 @@ def create_app(manager, device=None, auth=None):
         if target is not None and request.method in ("GET", "HEAD"):
             return Response(status=302, headers={"Location": target,
                                                  "Cache-Control": "no-store"})
+        # Somebody else's host name, outside that redirect: DNS rebinding.
+        if not api.host_allowed(request.headers.get("Host")):
+            return Response(json.dumps({"error": "this is not that host"}),
+                            status=421, mimetype="application/json",
+                            headers={"Cache-Control": "no-store"})
 
     @app.after_request
     def secure(response):
@@ -54,7 +59,7 @@ def create_app(manager, device=None, auth=None):
         if accepts_gzip(request.headers.get("Accept-Encoding")) \
                 and not name.endswith(".gz"):
             target = os.path.normpath(os.path.join(STATIC, name + ".gz"))
-            if target.startswith(STATIC) and os.path.isfile(target):
+            if target.startswith(STATIC + os.sep) and os.path.isfile(target):
                 response = send_from_directory(STATIC, name + ".gz")
                 plain = send_from_directory(STATIC, name)
                 response.headers["Content-Type"] = plain.headers[
@@ -71,8 +76,14 @@ def create_app(manager, device=None, auth=None):
             return Response(json.dumps({"error": "request too large"}),
                             status=413, mimetype="application/json",
                             headers={"Cache-Control": "no-store"})
-        # Parsed whatever the Content-Type says, as the standard-library
-        # server does, so the two cannot disagree about a request.
+        # A body must be declared JSON (see headers.py), and is then parsed
+        # as the standard-library server does, so the two cannot disagree.
+        if request.method != "GET" and not json_body_ok(
+                request.headers.get("Content-Type"), request.get_data()):
+            return Response(json.dumps(
+                {"error": "send the body as application/json"}),
+                status=415, mimetype="application/json",
+                headers={"Cache-Control": "no-store"})
         body = ({} if request.method == "GET"
                 else request.get_json(silent=True, force=True))
         if request.method != "GET" and body is None:

@@ -146,10 +146,12 @@ def run(system, release, install_root, busy=False, allow_metered=False,
         "release %s is not newer than the installed %s"
         % (release.version, running)))
 
+    # Blocking once signatures are: a signed manifest without a sha256 vouches
+    # for no bundle in particular.
     checks.append(Check(
         "checksum_published", bool(release.sha256),
         "the release publishes no sha256, so the download cannot be verified",
-        blocking=False))
+        blocking=require_signature))
 
     # A checksum says the bundle arrived intact; a signature says who made
     # it. Blocking only once the device has a key to check against -- see

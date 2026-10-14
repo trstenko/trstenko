@@ -6,4 +6,30 @@ Type=oneshot
 # bootcheck with the attempt count already past the limit: it rolls back and
 # exits. Then the app is started again, from the previous release.
 ExecStart=/usr/bin/python3 /opt/trstenko/bin/bootcheck.py /opt/trstenko
-ExecStartPost=/usr/bin/systemctl restart trstenko.service
+# The one step that needs root, and a fixed one: "+" runs only this line
+# with full privileges, outside the sandbox below.
+ExecStartPost=+/usr/bin/systemctl restart trstenko.service
+
+# Only /opt/trstenko is its business: it moves the `current` link and
+# counts boots. It runs as the app's user, so a rollback script that has been
+# tampered with gains nothing it did not already have.
+User=trstenko
+Group=trstenko
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+ReadWritePaths=/opt/trstenko
+ReadOnlyPaths=/opt/trstenko/bin

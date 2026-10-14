@@ -17,6 +17,11 @@ and the install starting, because nobody pressing the first one meant "fetch
 it and ask me again". An urgent release reaches the same place without the
 press.
 
+**Only a signed release may skip the question.** With no trusted key, an
+`urgent` release is asked about like any other: "urgent" is a word in a file
+anyone with write access to the release page can type, and acting on it
+without a person saying yes is only safe once a signature says who typed it.
+
 Urgency changes who is asked, never what is checked. An urgent update still
 fails preflight on a full SD card or a browning-out board.
 
@@ -134,7 +139,8 @@ class UpdateManager:
         if self.deadline is not None:
             out["seconds_until_auto"] = max(0.0, self.deadline - self.clock())
         if self.release is not None:
-            out["decision"] = ("notify" if self.release.urgent else "ask")
+            out["decision"] = ("notify" if self._goes_ahead(self.release)
+                               else "ask")
         return out
 
     # ---- the loop calls this ----
@@ -442,7 +448,7 @@ class UpdateManager:
             return
 
         self.error = ""
-        if release.urgent:
+        if self._goes_ahead(release):
             self.state = SCHEDULED
             self.deadline = self.clock() + self.config.urgent_grace_seconds
             self._emit("urgent_scheduled", {
@@ -487,6 +493,12 @@ class UpdateManager:
             return ("staged", staged)
 
         self._run(job)
+
+    @staticmethod
+    def _goes_ahead(release):
+        """Whether this release installs after its grace period without a
+        yes. Urgent and signed; see the module docstring."""
+        return release.urgent and release.signed
 
     def _progress(self, written, total):
         self.progress = (written / total) if total else 0.0

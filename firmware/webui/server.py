@@ -18,7 +18,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qsl
 
-from .headers import SECURITY_HEADERS, max_body
+from .headers import SECURITY_HEADERS, json_body_ok, max_body
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 
@@ -36,7 +36,7 @@ class _Handler(BaseHTTPRequestHandler):
         pass  # the device's journal is not a web access log
 
     def do_GET(self):
-        if self._captive():
+        if self._captive() or self._misdirected():
             return
         path, _, query = self.path.partition("?")
         if path.startswith("/api/"):
@@ -50,7 +50,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_HEAD(self):
         # Only the captive check uses HEAD; the page itself never does.
-        if not self._captive():
+        if not self._captive() and not self._misdirected():
             self._send(405, b"", "text/plain")
 
     def _captive(self):
@@ -66,6 +66,15 @@ class _Handler(BaseHTTPRequestHandler):
         for name, value in SECURITY_HEADERS.items():
             self.send_header(name, value)
         self.end_headers()
+        return True
+
+    def _misdirected(self):
+        """Refuse a request for somebody else's host name (DNS rebinding).
+        True if the request has been answered."""
+        if self.api.host_allowed(self.headers.get("Host")):
+            return False
+        self._send(421, json.dumps({"error": "this is not that host"})
+                   .encode(), "application/json")
         return True
 
     def _token(self):
@@ -105,6 +114,8 @@ class _Handler(BaseHTTPRequestHandler):
             body.close()
 
     def _with_body(self, method):
+        if self._misdirected():
+            return
         path, _, query = self.path.partition("?")
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -115,6 +126,11 @@ class _Handler(BaseHTTPRequestHandler):
                        "application/json")
             return
         raw = self.rfile.read(length) if length else b"{}"
+        if length and not json_body_ok(self.headers.get("Content-Type"), raw):
+            self._send(415, json.dumps(
+                {"error": "send the body as application/json"}).encode(),
+                "application/json")
+            return
         try:
             body = json.loads(raw or b"{}")
         except ValueError:
@@ -132,7 +148,8 @@ class _Handler(BaseHTTPRequestHandler):
     def _static(self, path):
         name = "index.html" if path in ("/", "") else path.lstrip("/")
         target = os.path.normpath(os.path.join(STATIC, name))
-        if not target.startswith(STATIC) or not os.path.isfile(target):
+        if not target.startswith(STATIC + os.sep) \
+                or not os.path.isfile(target):
             self._send(404, b"not found", "text/plain")
             return
         ext = os.path.splitext(target)[1]

@@ -44,6 +44,9 @@ every device's own page. When that changes, it changes there first.
 
 ## Known gaps, stated rather than hidden
 
+The October 2026 review adds more, with what was fixed and what is still
+open: [`SECURITY-REVIEW-2026-10.md`](SECURITY-REVIEW-2026-10.md).
+
 - **No key is trusted yet.** Signing is built and enforced the moment a key
   is added, but the shipped list is still empty, so releases install
   unverified and the device says so on its own page. This closes with one

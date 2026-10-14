@@ -1,0 +1,20 @@
+# Where the app asks for a third-party tool to be run (plan 10).
+#
+# One connection is one call: systemd starts trstenko-tool@.service for it,
+# with the connection as the runner's stdin and stdout. Only the app's user
+# can connect.
+[Unit]
+Description=Trstenko — third-party tool calls
+
+[Socket]
+ListenStream=/run/trstenko-tool.sock
+Accept=yes
+SocketUser=trstenko
+SocketGroup=trstenko
+SocketMode=0600
+# A turn calls one tool at a time; a few spare covers a page and a voice
+# turn at once without letting a loop pile up processes.
+MaxConnections=4
+
+[Install]
+WantedBy=sockets.target

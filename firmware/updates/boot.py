@@ -35,6 +35,16 @@ every boot, counts the attempt, and rolls back once the count passes
 `releases/`, so the file that performs the recovery is never the file being
 replaced.
 
+## The copy on the card does not change
+
+On the device `bin/` is read-only to the app (`deploy/trstenko.service`), so
+the `bin/` copy of this file and `bootcheck.py` is the one the card was made
+with, for the card's whole life. Every later release has to stay readable by
+it: the marker's five fields keep their names and meaning (new ones may be
+added; the copy ignores them), `current` stays a link into
+`releases/<version>`, and nothing it reads moves. A change to the recovery
+itself means reflashing the card.
+
 ## Symlinks, and Windows
 
 `current` is a symlink on the device. Windows needs a privilege for those, and
@@ -49,6 +59,7 @@ import shutil
 import time
 
 MARKER = "pending-confirm.json"
+_PENDING_FIELDS = ("new", "previous", "at", "attempts", "max_attempts")
 CURRENT = "current"
 POINTER = "current.path"
 RELEASES = "releases"
@@ -183,8 +194,12 @@ class BootGuard:
         try:
             with open(self.layout.marker, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            return Pending(**data)
-        except (OSError, ValueError, TypeError):
+            # Only the fields this copy knows. The copy in bin/ outlives the
+            # release that wrote it, and a field added later must not make
+            # it think nothing is on trial.
+            return Pending(**{k: data[k] for k in _PENDING_FIELDS
+                              if k in data})
+        except (OSError, ValueError, TypeError, AttributeError):
             return None
 
     def arm(self, new, previous, max_attempts=MAX_ATTEMPTS):

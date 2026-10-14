@@ -36,6 +36,11 @@ def create_app(manager, device=None, auth=None):
         if target is not None and request.method in ("GET", "HEAD"):
             return Response(status=302, headers={"Location": target,
                                                  "Cache-Control": "no-store"})
+        # Somebody else's host name, outside that redirect: DNS rebinding.
+        if not api.host_allowed(request.headers.get("Host")):
+            return Response(json.dumps({"error": "this is not that host"}),
+                            status=421, mimetype="application/json",
+                            headers={"Cache-Control": "no-store"})
 
     @app.after_request
     def secure(response):

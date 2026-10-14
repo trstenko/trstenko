@@ -57,10 +57,14 @@ class Rig:
 
         self.releases = FakeReleases(kbps=1e9, clock=lambda: self.t,
                                      **release_kw)
+        # Trusts the fake feed's key, as the emulator's window does: a
+        # device that ships will have one, and only a signed urgent release
+        # goes ahead without asking.
         self.config = UpdateConfig(repo="emulator/trstenko",
                                    data_root=data_root,
                                    install_root=data_root, auto_check=False,
-                                   urgent_grace_seconds=10.0)
+                                   urgent_grace_seconds=10.0,
+                                   extra_keys=[self.releases.public_key])
         self.events = []
         self.restarts = 0
         self.updater = self._manager()
@@ -608,6 +612,17 @@ def scenario_signing(report, root):
                  and "no trusted keys" in rig.updater.release.signature_note,
                  rig.updater.release.signature_note)
 
+    # "Urgent" in an unsigned release is a word anyone with write access to
+    # the release page could have typed. It is asked about, not scheduled.
+    rig.updater.cancel()
+    rig.releases.urgency = "urgent"
+    rig.updater.check(force=True)
+    rig.settle(lambda: rig.updater.state != "checking")
+    report.check("an unsigned urgent release asks instead of installing "
+                 "itself", rig.updater.state == "awaiting_consent"
+                 and rig.updater.status()["decision"] == "ask",
+                 rig.updater.state)
+
 
 def scenario_no_room(report, root):
     rig = Rig(os.path.join(root, "full"), version="0.4.0", size_mb=200.0)
@@ -830,6 +845,29 @@ def scenario_hostile_bundle(report, root):
                  "outside" in caught, caught[:60])
     report.check("and nothing landed outside",
                  not os.path.exists(os.path.join(root, "escaped.txt")))
+
+    # A link out of the folder, then a file written through it. The names
+    # alone are clean; only the link's target gives it away.
+    outside = os.path.join(root, "hostile-outside")
+    os.makedirs(outside, exist_ok=True)
+    path = os.path.join(data, "evil-link.tar.gz")
+    with tar.open(path, "w:gz") as archive:
+        link = tar.TarInfo("through")
+        link.type = tar.SYMTYPE
+        link.linkname = outside
+        archive.addfile(link)
+        info = tar.TarInfo("through/escaped.txt")
+        info.size = 4
+        archive.addfile(info, io.BytesIO(b"evil"))
+    caught = ""
+    try:
+        installer.apply(Staged(path, "9.9.8", "", 0))
+    except StagingError as exc:
+        caught = str(exc)
+    report.check("a bundle linking out of its directory is refused, on any "
+                 "Python", "links outside" in caught, caught[:60])
+    report.check("and nothing landed through the link",
+                 not os.listdir(outside))
 
 
 def scenario_pairing(report, root):
@@ -3803,6 +3841,20 @@ def scenario_web_servers(report, root):
                      "refused (no cross-site PIN guessing)",
                      response.status == 415, str(response.status))
         conn.close()
+
+        # DNS rebinding: somebody else's name, pointing at the device.
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.putrequest("POST", "/api/auth", skip_host=True)
+        conn.putheader("Host", "rebind.example.com")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", "17")
+        conn.endheaders(b'{"pin": "000000"}')
+        response = conn.getresponse()
+        response.read()
+        report.check("standard-library server: a request for another site's "
+                     "name is refused (DNS rebinding)",
+                     response.status == 421, str(response.status))
+        conn.close()
     server.shutdown()
     server.server_close()
 
@@ -3844,6 +3896,16 @@ def scenario_web_servers(report, root):
         report.check("Flask server: a body not sent as JSON is refused "
                      "(no cross-site PIN guessing)",
                      plain.status_code == 415, str(plain.status_code))
+        rebound = client.post("/api/auth", data='{"pin": "000000"}',
+                              content_type="application/json",
+                              headers={"Host": "rebind.example.com"})
+        own = client.get("/api/v1/info", headers={
+            "Host": "trstenko.local",
+            "Authorization": "Bearer " + rig.token})
+        report.check("Flask server: a request for another site's name is "
+                     "refused (DNS rebinding), the device's own is not",
+                     rebound.status_code == 421 and own.status_code == 200,
+                     "%s %s" % (rebound.status_code, own.status_code))
     rig.rig.close()
 
 
@@ -3977,6 +4039,8 @@ def main(argv=None):
         ("third-party tools: the Tools card",
          extension_scenarios.scenario_extension_installed),
         ("the tool creator", extension_scenarios.scenario_toolmaker),
+        ("where a tool's process runs",
+         extension_scenarios.scenario_extension_isolation),
         ("the model evaluation: scoring", eval_scenarios.scenario_eval_scoring),
         ("the model evaluation: the runner, on the fake provider",
          eval_scenarios.scenario_eval_runner),

@@ -491,9 +491,13 @@ def scenario_captive_portal(report, root):
             r.setup.stop()
             r.rig.step(0.2)
             status, where, _, _ = get("connectivitycheck.gstatic.com")
-            report.check("once setup is over, nothing is redirected",
-                         status == 404 and where is None,
+            report.check("once setup is over, nothing is redirected, and "
+                         "another site's name is refused (DNS rebinding)",
+                         status == 421 and where is None,
                          "%s %s" % (status, where))
+            status, _, body, _ = get("trstenko.local", "/")
+            report.check("while the device's own names are served",
+                         status == 200 and b"app.js" in body, str(status))
     finally:
         server.shutdown()
         server.server_close()

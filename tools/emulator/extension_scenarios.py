@@ -59,6 +59,8 @@ def get_weather(ctx, city, days=1):
     if city == "forever":
         while True:
             pass
+    if city == "hungry":
+        return {"size": len(bytearray(600 * 1024 * 1024))}
     if city == "broken":
         return 1 / 0
     print("this goes nowhere near the pipe")
@@ -627,3 +629,102 @@ def scenario_extension_installed(report, root):
                      not os.path.exists(os.path.join(data, "tools")))
     finally:
         rig.close()
+
+
+def scenario_extension_isolation(report, root):
+    """Where a tool's process runs. On the device, a systemd socket starts
+    each call in a unit of its own; here a small server stands in for
+    systemd, doing what `Accept=yes` does: one runner per connection, the
+    connection as its stdin and stdout."""
+    import socket
+    import subprocess
+    import sys
+    import threading
+
+    pkg = package.read(package.pack(MANIFEST,
+                                    {"tool.py": CODE.encode("utf-8")}))
+    base = os.path.join(root, "extension-isolation")
+    installed = os.path.join(base, "installed")
+    folder = os.path.join(installed, pkg.id)
+    package.unpack(pkg, folder)
+
+    def internet(tool_id, method, url, headers, body):
+        return {"status": 200, "text": '{"degrees": 7}'}
+
+    def call(city):
+        return host.run(folder, "get_weather", {"city": city},
+                        host.Call(pkg, host.Storage(os.path.join(
+                            base, "data.json")), internet), seconds=5.0)
+
+    # Off the device: a child process, with the kernel's limits on it.
+    try:
+        import resource
+        limited = hasattr(resource, "prlimit")
+    except ImportError:
+        limited = False
+    if limited:
+        payload, problem = call("hungry")
+        report.check("off the device, a tool cannot take the board's memory",
+                     payload is None and problem
+                     and "MemoryError" in problem, str(problem)[:70])
+    else:
+        report.check("off the device, memory limits (SKIPPED: this platform "
+                     "cannot set them for another process)", True)
+
+    if not hasattr(socket, "AF_UNIX"):
+        report.check("the tool socket (SKIPPED: no Unix sockets here)", True)
+        return
+
+    path = os.path.join(base, "tool.sock")
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(path)
+    listener.listen(4)
+    stopping = []
+
+    def serve():
+        while not stopping:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            subprocess.Popen(
+                [sys.executable, "-I", "-B", host.RUNNER, "--socket",
+                 installed], stdin=conn.fileno(), stdout=conn.fileno(),
+                stderr=subprocess.DEVNULL, env={})
+            conn.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    previous = os.environ.get(host.SOCKET_ENV)
+    os.environ[host.SOCKET_ENV] = path
+    try:
+        payload, problem = call("Maribor")
+        report.check("on the device, a call goes through the tool socket "
+                     "and comes back", payload is not None
+                     and payload.get("degrees") == 7, str(problem))
+
+        raw = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        raw.settimeout(5)
+        raw.connect(path)
+        raw.sendall(json.dumps({"function": "get_weather",
+                                "args": {"city": "x"},
+                                "tool": "../extension-isolation"})
+                    .encode() + b"\n")
+        answer = raw.makefile("rb").readline()
+        raw.close()
+        report.check("a request naming something that is not a tool id is "
+                     "refused before any code runs",
+                     b"not a tool id" in answer, answer[:70])
+
+        os.environ[host.SOCKET_ENV] = path + ".missing"
+        payload, problem = call("Maribor")
+        report.check("with the socket configured but gone, the call fails "
+                     "rather than running with the firmware's rights",
+                     payload is None and "could not be started" in problem,
+                     str(problem))
+    finally:
+        if previous is None:
+            os.environ.pop(host.SOCKET_ENV, None)
+        else:
+            os.environ[host.SOCKET_ENV] = previous
+        stopping.append(True)
+        listener.close()

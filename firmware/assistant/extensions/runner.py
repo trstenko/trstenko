@@ -2,6 +2,13 @@
 
     python -I -B runner.py <tool dir>
 
+or, on the device, once per connection to a systemd socket:
+
+    python3 -I -B runner.py --socket <installed tools dir>
+
+where systemd hands the connection over as stdin and stdout, and the request
+names the tool (`deploy/trstenko-tool@.service`).
+
 It is a file on its own: it imports nothing from the firmware, and the firmware
 never imports the tool. Everything the tool wants from the outside it asks its
 parent for, one JSON object per line on stdout, and reads the answer from
@@ -11,15 +18,22 @@ code the tool could edit.
 The audit hook below refuses sockets, new processes, `ctypes` and writing
 files. It is a tripwire: it catches an honest mistake and a lazy attack, and
 it makes the refusal readable ("a tool may not open a socket"). It is not the
-wall. The wall is the operating system on the device, which runs this process
-as a user with no network and nothing to read (plan 10).
+wall, because code running in this interpreter can get past anything this
+interpreter does to it. The wall is the unit the device starts this in: a
+throwaway user, no network, a filesystem holding the tool and Python and
+nothing else, and limits on memory, processes and time.
 """
 
 import io
 import json
 import os
+import re
 import sys
 import traceback
+
+# What a tool id may look like (package.py's rule). Checked again here because
+# in socket mode the id arrives in the request and becomes a path.
+_TOOL_ID = re.compile(r"^[a-z0-9]+(?:[-.][a-z0-9]+)*$")
 
 MAX_LINE = 256 * 1024
 
@@ -199,7 +213,11 @@ def _guard(tool_dir):
 
 
 def main(argv):
-    tool_dir = os.path.abspath(argv[1])
+    socket_root = None
+    if len(argv) > 2 and argv[1] == "--socket":
+        socket_root = os.path.abspath(argv[2])
+    else:
+        tool_dir = os.path.abspath(argv[1])
     # The pipe is ours. Whatever the tool prints goes to stderr, where the
     # tool creator shows it and the device throws it away.
     reader = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8",
@@ -211,6 +229,14 @@ def main(argv):
     sys.stdin = io.StringIO("")
     channel = _Channel(reader, writer)
     request = channel.read()
+    if socket_root is not None:
+        tool_id = request.get("tool")
+        if not isinstance(tool_id, str) or not _TOOL_ID.match(tool_id) \
+                or len(tool_id) > 40:
+            channel.write({"op": "error", "kind": "refused",
+                           "message": "that is not a tool id"})
+            return 2
+        tool_dir = os.path.join(socket_root, tool_id)
 
     with open(os.path.join(tool_dir, "tool.py"), "r", encoding="utf-8") as fh:
         source = fh.read()

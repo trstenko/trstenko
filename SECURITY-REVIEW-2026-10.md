@@ -15,20 +15,21 @@ something new was found about them.
 
 | # | Finding | Severity | Status |
 |---|---------|----------|--------|
-| 1 | The firmware, and every third-party tool it starts, runs as root | High | Open: deploy change |
-| 2 | The main service can rewrite the script that boots as unconfined root | High | Open: deploy change |
-| 3 | Third-party tools are not isolated by the OS, only by an in-process hook | High | Open: design change |
-| 4 | With no trusted key, an `urgent` release installs itself without a yes | High | Open, see below |
+| 1 | The firmware, and every third-party tool it starts, runs as root | High | **Fixed** in the units; to confirm on the board |
+| 2 | The main service can rewrite the script that boots as unconfined root | High | **Fixed** in the units; to confirm on the board |
+| 3 | Third-party tools are not isolated by the OS, only by an in-process hook | High | **Fixed**: per-call sandboxed unit; to confirm on the board |
+| 4 | With no trusted key, an `urgent` release installs itself without a yes | High | **Fixed** (the key itself is still to be made) |
 | 5 | A signed manifest was not tied to the release it came with | Medium | **Fixed** |
 | 6 | Any web page the owner opens could hold the PIN lockout shut | Medium | **Fixed** |
 | 7 | Anyone on the LAN can still hold the PIN lockout shut | Low | Open: accepted trade-off |
-| 8 | No `Host` check outside setup mode (DNS rebinding) | Low | Open |
+| 8 | No `Host` check outside setup mode (DNS rebinding) | Low | **Fixed** |
 | 9 | The PIN lockout checked and updated without a lock | Low | **Fixed** |
 | 10 | Static files: the folder check was a bare string prefix | Low | **Fixed** |
-| 11 | A tool's process has no memory or CPU limits | Low | Open |
-| 12 | Tar bundles are not checked for links on an older Python | Low | Open |
+| 11 | A tool's process has no memory or CPU limits | Low | **Fixed** |
+| 12 | Tar bundles are not checked for links on an older Python | Low | **Fixed** |
 | 13 | The owner's Ollama host can be any address | Info | Open |
-| 14 | The wakeword dashboard trusts any request from localhost | Low (dev tool) | Open |
+| 14 | The wakeword dashboard trusts any request from localhost | Low (dev tool) | **Fixed** |
+| 15 | The app's crash-loop rollback was configured where systemd ignores it | Medium | **Fixed** |
 
 ## Findings
 
@@ -50,6 +51,13 @@ third-party tool (finding 3).
 `SupplementaryGroups=audio gpio spi`; the polkit rule already exists for the
 Wi-Fi part. The board TODO in the polkit file is the remaining step.
 
+**Update, fixed in the units.** `trstenko.service` runs as a `trstenko`
+system user with an empty capability set and the supplementary groups for
+the hardware. The polkit rule now also grants restarting its own unit and
+rebooting or powering off, the three things the firmware asks systemd for.
+`deploy/README.md` creates the user and sets ownership. Not yet run on a
+board, which the README lists as a TODO.
+
 ### 2. The main service can rewrite what boots as unconfined root — High
 
 `trstenko-bootcheck.service` and `trstenko-rollback.service` run
@@ -69,6 +77,13 @@ does not hold.
   and mark `/opt/trstenko/bin` read-only for the main unit
   (`ReadOnlyPaths=/opt/trstenko/bin`). Updating bootcheck then becomes a
   base-image change, which matches how rarely it should change.
+
+**Update, fixed in the units.** Both boot units now run as `trstenko`, with
+the same sandbox as the app, so a tampered `bootcheck.py` gains nothing. The
+rollback unit's `systemctl restart` is the one step left running as root, a
+fixed command marked `+`. `bin/` is owned by root and read-only to the app
+(`ReadOnlyPaths=`, which also stops it being renamed out of the way), so
+`bootcheck.py` now only changes when a card is made.
 
 ### 3. Third-party tools are not isolated by the OS — High
 
@@ -111,6 +126,19 @@ currently promises more than the device enforces.
   isolation the device does not have, or keep tool install behind a
   developer switch.
 
+**Update, fixed.** On the device each tool call is now a connection to
+`trstenko-tool.socket`. systemd starts `trstenko-tool@.service` for it:
+`DynamicUser=yes`, `PrivateNetwork=yes`, an empty filesystem except
+read-only Python, `/opt/trstenko` and the installed tools, a syscall filter,
+and `MemoryMax=`, `TasksMax=`, `CPUQuota=` and `RuntimeMaxSec=`. The app's
+unit sets `TRSTENKO_TOOL_SOCKET`; when it is set, the socket is the only way
+a tool runs, with no fallback to a child process. The runner takes the tool
+id from the request and checks it before turning it into a path. A new
+scenario stands in for systemd's socket activation and checks the round
+trip, the id check and the absence of a fallback. The units pass
+`systemd-analyze verify`, but this container has no systemd, so the sandbox
+itself has not been run.
+
 ### 4. With no trusted key, an urgent release installs itself — High
 
 Already listed as a known gap ("no key is trusted yet"), but one consequence
@@ -127,6 +155,13 @@ building (`python -m tools.release keygen` and `trust`, keep the private key
 off GitHub). Until a key is configured, treat every release as needing
 consent, whatever it says about urgency. That is a two-line change in
 `_on_checked`, left for you to decide because it changes product behaviour.
+
+**Update, fixed.** Only a release that is urgent *and* signed is scheduled
+without asking (`UpdateManager._goes_ahead`). With no key, an urgent release
+waits for consent like any other. The headless rigs now trust the fake
+feed's key, as the emulator's window already did, and `scenario_signing`
+checks that an unsigned urgent release asks. Making and trusting the real
+key is still to do.
 
 ### 5. A signed manifest was not tied to its release — Medium, fixed
 
@@ -185,6 +220,12 @@ only adds another way to reach `/api/auth` (finding 7). It is cheap to close:
 answer 421 for any `Host` that is not one of `captive.OWN_HOSTS`, the device's
 own IP addresses or its mDNS name.
 
+**Update, fixed.** Both servers answer 421 to a `Host` that is not an
+address, one of the device's own names, its hostname or a `.local` name
+(`captive.host_allowed`). This comes after the captive redirect, so setup
+mode is unchanged. Checked on both servers and in the captive-portal
+scenario.
+
 ### 9. The lockout checked and updated without a lock — Low, fixed
 
 `Auth.verify` and `Auth.confirm` read "am I locked", compared, then counted
@@ -211,6 +252,11 @@ OOM killer, which may pick the firmware. This goes away with the unit in
 finding 3 (`MemoryMax=`, `TasksMax=`). Without it, `preexec_fn` with
 `resource.setrlimit(RLIMIT_AS, ...)` is the quick version.
 
+**Update, fixed.** Off the device, the runner's child process is capped
+with `prlimit` (256 MB of address space, CPU time, no file writes, 64 open
+files) where the platform supports it. On the device the unit's limits apply.
+A scenario checks that a tool asking for 600 MB gets a `MemoryError`.
+
 ### 12. Tar bundles on an older Python — Low, open
 
 `installer._check_members` checks member *names* for `..` and absolute paths
@@ -220,6 +266,10 @@ pointing outside the folder is not refused. Only reachable with a bundle that
 already passed the updater's checks, so it matters only with finding 4 open.
 Refuse `issym()`/`islnk()` members that point outside the folder in
 `_check_members`, or require a Python with `tarfile.data_filter`.
+
+**Update, fixed.** `_check_tar_entries` refuses links whose target leaves
+the folder, and any entry that is not a file, folder or link, before
+anything is written. New check in `scenario_hostile_bundle`.
 
 ### 13. The Ollama host can be any address — Info
 
@@ -237,6 +287,18 @@ reach it through DNS rebinding, and start the training jobs or touch the
 recordings. The jobs are a fixed list, so this is nuisance rather than code
 execution. `tools/toolmaker` already does it right: check the `Host` header
 and require the per-run token from everyone, local or not.
+
+**Update, fixed.** A localhost caller is trusted only when `Host` is a
+local name and any `Origin` is local too.
+
+### 15. The crash-loop rollback was configured where systemd ignores it — Medium, fixed
+
+Found with `systemd-analyze verify` while changing the units.
+`StartLimitIntervalSec=` and `OnFailure=` were under `[Service]` in
+`trstenko.service`, where systemd ignores them. So five crashes in a minute
+did not start `trstenko-rollback.service`, and the "a bad update undoes
+itself" promise in `SECURITY.md` rested only on bootcheck's boot counter.
+They are now under `[Unit]`.
 
 ## Checked and found sound
 
@@ -275,3 +337,19 @@ and require the per-run token from everyone, local or not.
 | `firmware/updates/releases.py` | A signed manifest must name this release's version; urgency only from signed fields (5) |
 | `firmware/updates/preflight.py` | A missing sha256 blocks when signatures are required (5) |
 | `tools/emulator/` | Scenarios for 5 and 6; each failed before the fix and passes after |
+
+Second round, after the review:
+
+| File | Change |
+|------|--------|
+| `firmware/updates/manager.py` | Only a signed urgent release installs without a yes (4) |
+| `firmware/updates/installer.py` | Tar links out of the folder, and special files, refused (12) |
+| `firmware/webui/captive.py`, `api.py`, `server.py`, `app.py` | 421 for another site's `Host` (8) |
+| `firmware/assistant/extensions/runner.py`, `host.py` | Socket-activated mode; no fallback when the socket is configured; `prlimit` caps off the device (3, 11) |
+| `firmware/deploy/trstenko.service` | `User=trstenko`, no capabilities, `bin/` read-only, the tool socket; start limit and `OnFailure` moved to `[Unit]` (1, 2, 15) |
+| `firmware/deploy/trstenko-bootcheck.service`, `trstenko-rollback.service` | Run as `trstenko`, sandboxed; only the final restart is root (2) |
+| `firmware/deploy/trstenko-tool.socket`, `trstenko-tool@.service` | New: one sandboxed unit per tool call (3, 11) |
+| `firmware/deploy/50-trstenko-network.rules` | Also restart own unit, reboot, power off (1) |
+| `firmware/deploy/README.md` | User, ownership, socket; board TODOs |
+| `tools/wakeword/ui/server.py` | Local trust needs a local `Host` and `Origin` (14) |
+| `tools/emulator/` | Scenarios for 4, 8, 11, 12 and the tool socket |

@@ -83,8 +83,34 @@ def _lan_ip():
         s.close()
 
 
-def _is_local(remote_addr):
-    return remote_addr in ("127.0.0.1", "::1")
+_LOCAL_NAMES = ("localhost", "127.0.0.1", "[::1]")
+
+
+def _host_name(value):
+    value = (value or "").strip().lower()
+    if value.startswith("["):
+        return value.partition("]")[0] + "]"
+    return value.partition(":")[0]
+
+
+def _is_local(request):
+    """A request from this machine, sent by a page on this machine.
+
+    The address alone is not enough: a web page open in the same browser
+    can post here (once the ad-hoc certificate has been accepted, which
+    using the dashboard needs), and a DNS-rebinding page arrives from
+    127.0.0.1 under its own name. So the Host has to be a local name, and
+    an Origin, when the browser sends one, has to be one too."""
+    if request.remote_addr not in ("127.0.0.1", "::1"):
+        return False
+    if _host_name(request.headers.get("Host")) not in _LOCAL_NAMES:
+        return False
+    origin = request.headers.get("Origin")
+    if origin:
+        from urllib.parse import urlsplit
+        if _host_name(urlsplit(origin).netloc) not in _LOCAL_NAMES:
+            return False
+    return True
 
 
 def require_token(view):
@@ -95,7 +121,7 @@ def require_token(view):
     @functools.wraps(view)
     def wrapped(*args, **kwargs):
         from flask import jsonify, request
-        if _is_local(request.remote_addr):
+        if _is_local(request):
             return view(*args, **kwargs)
         supplied = (
             request.form.get("token")
@@ -466,7 +492,7 @@ def create_app():
     def record_info():
         # Reveals APP_TOKEN, so this itself must not be reachable from the
         # LAN -- there'd be no point gating it behind the token it hands out.
-        if not _is_local(request.remote_addr):
+        if not _is_local(request):
             return jsonify({"error": "forbidden"}), 403
         return jsonify({
             "lan_url": "https://%s:5151/record" % _lan_ip(),

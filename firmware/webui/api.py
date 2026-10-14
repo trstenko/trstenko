@@ -96,6 +96,11 @@ class UpdateApi:
             return None
         return captive.redirect(host_header, setup.state)
 
+    def host_allowed(self, host_header):
+        """False for a request that names somebody else's host outside the
+        captive redirect: DNS rebinding (`captive.host_allowed`)."""
+        return captive.host_allowed(host_header)
+
     def stream(self, path, token=None):
         """`GET /api/v1/events`, which is the one answer that is not a dict.
         Returns None when `path` is not the stream, else (status, body)."""

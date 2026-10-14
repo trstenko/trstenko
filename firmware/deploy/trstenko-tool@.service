@@ -1,0 +1,68 @@
+# One call to a third-party tool, started by trstenko-tool.socket.
+#
+# This is the wall runner.py talks about. The tool's code runs as a user that
+# exists only for this call, with no network, and a filesystem that holds
+# Python, the firmware's code and the installed tools, read-only, and nothing
+# else: not the API keys, not the PIN, not the memories, not Wi-Fi
+# passwords. Everything a tool may have (HTTPS to its own hosts, a few KB of
+# storage) it asks the app for over the connection, and the app checks it
+# against the tool's manifest. Memory, processes and time are capped, so a
+# tool cannot starve the board either.
+[Unit]
+Description=Trstenko — one third-party tool call
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=/usr/bin/python3 -I -B /opt/trstenko/current/firmware/assistant/extensions/runner.py --socket /var/lib/trstenko/tools/installed
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+
+DynamicUser=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+UMask=0077
+
+# Nothing on disk but what the runner needs to read.
+TemporaryFileSystem=/var/lib /opt /srv /mnt /media
+BindReadOnlyPaths=/opt/trstenko /var/lib/trstenko/tools/installed
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# No network at all. The connection it was started with is already open.
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=none
+
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount
+SystemCallErrorNumber=EPERM
+
+# The app gives a call eight seconds; this is the backstop for a tool that
+# keeps running after the app has hung up.
+RuntimeMaxSec=12
+MemoryMax=128M
+MemorySwapMax=0
+TasksMax=8
+CPUQuota=60%
+LimitFSIZE=0
+LimitCORE=0
+LimitNOFILE=64

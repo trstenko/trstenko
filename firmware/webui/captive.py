@@ -25,6 +25,9 @@ should offer to sign in after joining from the QR code, and the page it opens
 should be able to pair and finish the Wi-Fi step.
 """
 
+import ipaddress
+import socket
+
 PORTAL = "http://10.42.0.1/"
 
 # Hosts that mean this device. Anything else, during setup, is redirected.
@@ -50,3 +53,34 @@ def redirect(host_header, setup_state):
     if not host or host in OWN_HOSTS:
         return None
     return PORTAL
+
+
+def _machine_names():
+    try:
+        name = socket.gethostname().lower()
+    except OSError:
+        return ()
+    return (name, name + ".local") if name else ()
+
+
+def host_allowed(host_header):
+    """Whether a request naming this host is meant for the device, at any
+    time, setup or not.
+
+    DNS rebinding is a page on somebody else's site whose name, a moment
+    later, resolves to this device: the browser then lets that page talk to
+    the device as though it were its own. The browser still sends the page's
+    own name in `Host`, so anything that is not an address, one of the
+    device's own names or an mDNS name is refused.
+    """
+    host = host_of(host_header)
+    if not host:
+        return True       # HTTP/1.0; a browser always sends one
+    if host in OWN_HOSTS or host.endswith(".local"):
+        return True
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return True
+    except ValueError:
+        pass
+    return host in _machine_names()

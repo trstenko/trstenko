@@ -231,6 +231,7 @@ class Installer:
             else:
                 with tarfile.open(bundle) as archive:
                     _check_members(archive.getnames())
+                    _check_tar_entries(archive.getmembers())
                     _extract(archive, work)
         except (tarfile.TarError, zipfile.BadZipFile, OSError) as exc:
             raise StagingError("cannot unpack the bundle: %s" % exc)
@@ -290,6 +291,13 @@ class Installer:
 
         It has to keep working when the release it came from is the broken
         one, so it cannot live inside `releases/`.
+
+        On the device `bin/` is root's and read-only to this service
+        (`deploy/trstenko.service`): the boot units run what is in it, so
+        whatever can rewrite it chooses what runs at boot. There the copy is
+        refused, the card keeps the script it was made with, and changing it
+        is a new base image. Elsewhere (the emulator, a bench Pi set up by
+        hand) the copy goes ahead.
         """
         # bootcheck.py and the boot guard it uses. Both, because the copy
         # runs as a script with no package around it.
@@ -304,8 +312,8 @@ class Installer:
                 shutil.copyfile(source,
                                 os.path.join(self.layout.bin_dir, name))
         except OSError as exc:
-            self.log("update: could not refresh bootcheck.py (%s); the "
-                     "existing one stays in place" % exc)
+            self.log("update: bootcheck.py left as the card has it (%s)"
+                     % exc)
 
     # ---- staging housekeeping ----
 
@@ -364,6 +372,30 @@ def _check_members(names):
         if name.startswith("/") or name.startswith("\\") or ".." in name.replace("\\", "/").split("/"):
             raise StagingError("the bundle tries to write outside its "
                                "directory: %r" % name)
+
+
+def _check_tar_entries(members):
+    """Refuse what a name check cannot see: a link whose target leaves the
+    directory, and anything that is not a plain file, a folder or a link.
+    `tarfile`'s `data` filter does this on a Python that has it; this is the
+    same rule for one that does not, checked before anything is written."""
+    for member in members:
+        if member.issym() or member.islnk():
+            target = member.linkname.replace("\\", "/")
+            if member.issym():
+                # Relative to the link's own folder.
+                base = os.path.dirname(member.name.replace("\\", "/"))
+                target = os.path.normpath(os.path.join(base, target))
+            else:
+                target = os.path.normpath(target)
+            if target.startswith("/") or target == ".." \
+                    or target.startswith("../"):
+                raise StagingError("the bundle links outside its directory: "
+                                   "%r -> %r" % (member.name,
+                                                 member.linkname))
+        elif not (member.isfile() or member.isdir()):
+            raise StagingError("the bundle holds something that is not a "
+                               "file or a folder: %r" % member.name)
 
 
 def _extract(archive, work):

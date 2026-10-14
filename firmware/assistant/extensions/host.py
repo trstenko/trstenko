@@ -13,6 +13,19 @@ here against what its `tool.json` declared:
 
 This runs on the assistant's worker thread, never on the main loop, and
 changes no device state: the storage file belongs to the tool alone.
+
+## Where the process runs
+
+On the device, `TRSTENKO_TOOL_SOCKET` names a systemd socket, and each call
+is one connection to it: systemd starts `runner.py` in a unit of its own, as
+a throwaway user with no network and nothing on disk but the tool and Python
+(`deploy/trstenko-tool@.service`). When the variable is set the socket is the
+only way a tool runs; if it cannot be reached, the call fails rather than
+falling back to a process with the firmware's own rights.
+
+Everywhere else (the emulator, the tool creator, a laptop), the runner is a
+child process, with memory, CPU time, file size and open files capped by the
+kernel where the platform allows it.
 """
 
 import http.client
@@ -42,6 +55,10 @@ STORAGE_BYTES = 8 * 1024
 MAX_KEY = 64
 _HEADERS_REFUSED = {"host", "content-length", "transfer-encoding",
                     "connection", "proxy-authorization"}
+SOCKET_ENV = "TRSTENKO_TOOL_SOCKET"
+# For the child process off the device. The unit sets its own on the device.
+MEMORY_LIMIT = 256 * 1024 * 1024
+OPEN_FILES_LIMIT = 64
 
 
 class Denied(Exception):
@@ -236,6 +253,76 @@ def _environment():
     return env
 
 
+class _Connection:
+    """One call over the device's tool socket, shaped like the parts of a
+    `Popen` that `run` uses. Closing it is what stops the call; the unit's
+    own time limit stops a tool that ignores that."""
+
+    stderr = None
+
+    def __init__(self, path, timeout):
+        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            self._sock.settimeout(timeout)
+            self._sock.connect(path)
+            self._sock.settimeout(None)
+        except OSError:
+            self._sock.close()
+            raise
+        self.stdin = self._sock.makefile("wb")
+        self.stdout = self._sock.makefile("rb")
+
+    def kill(self):
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self._sock.close()
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def _limit(pid, seconds):
+    """Cap what the child may take, where the kernel lets us say so for
+    another process. Applied a moment after it starts, before it has read
+    its request, let alone run the tool."""
+    try:
+        import resource
+        prlimit = resource.prlimit
+    except (ImportError, AttributeError):
+        return
+    cpu = int(seconds) + 2
+    for name, value in (("RLIMIT_AS", MEMORY_LIMIT),
+                        ("RLIMIT_CPU", cpu),
+                        ("RLIMIT_FSIZE", 0),
+                        ("RLIMIT_CORE", 0),
+                        ("RLIMIT_NOFILE", OPEN_FILES_LIMIT)):
+        which = getattr(resource, name, None)
+        if which is None:
+            continue
+        try:
+            prlimit(pid, which, (value, value))
+        except (OSError, ValueError):
+            pass
+
+
+def _start(folder, call, seconds, python, on_output):
+    """The runner for one call: a connection to the device's socket, or a
+    child process. Raises OSError if neither can be had."""
+    path = os.environ.get(SOCKET_ENV)
+    if path:
+        return _Connection(path, timeout=min(2.0, seconds))
+    process = subprocess.Popen(
+        [python or sys.executable, "-I", "-B", RUNNER, folder],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE if on_output else subprocess.DEVNULL,
+        cwd=folder, env=_environment(),
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    _limit(process.pid, seconds)
+    return process
+
+
 def run(folder, function, args, call, lang="en", now="", tz="",
         seconds=CALL_SECONDS, python=None, on_output=None):
     """Run one function of the tool unpacked in `folder`.
@@ -244,12 +331,7 @@ def run(folder, function, args, call, lang="en", now="", tz="",
     when it failed, timed out, or broke a rule. Never raises for anything the
     tool did."""
     try:
-        process = subprocess.Popen(
-            [python or sys.executable, "-I", "-B", RUNNER, folder],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE if on_output else subprocess.DEVNULL,
-            cwd=folder, env=_environment(),
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        process = _start(folder, call, seconds, python, on_output)
     except OSError as exc:
         log.error("tool %s would not start: %s", call.package.id, exc)
         return None, "the tool could not be started"
@@ -267,7 +349,7 @@ def run(folder, function, args, call, lang="en", now="", tz="",
 
     threading.Thread(target=pump, daemon=True,
                      name="tool-%s" % call.package.id).start()
-    if on_output:
+    if on_output and process.stderr is not None:
         def drain():
             try:
                 text = process.stderr.read(64 * 1024)
@@ -284,7 +366,7 @@ def run(folder, function, args, call, lang="en", now="", tz="",
     deadline = time.monotonic() + seconds
     try:
         send({"function": function, "args": args, "lang": lang, "now": now,
-              "tz": tz})
+              "tz": tz, "tool": os.path.basename(os.path.normpath(folder))})
         while True:
             try:
                 raw = lines.get(timeout=max(0.0, deadline - time.monotonic()))

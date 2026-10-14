@@ -1,14 +1,16 @@
-// Lets the trstenko service manage Wi-Fi connections through NetworkManager,
-// and nothing else. Setup mode (firmware/netsetup.py) needs it to raise the
-// hotspot and to join the owner's network; the service is otherwise sandboxed.
+// What the trstenko service may ask of the system, and nothing else:
+//
+// - Wi-Fi through NetworkManager. Setup mode (firmware/netsetup.py) raises
+//   the hotspot and joins the owner's network.
+// - Restarting its own unit, after an update (firmware/updates/installer.py).
+// - Rebooting and powering off, from the power button (firmware/hal/pi.py).
+//
+// The service is otherwise sandboxed and runs as its own user.
 //
 // Install:  sudo cp 50-trstenko-network.rules /etc/polkit-1/rules.d/
 //
-// Only needed once the unit runs as its own user ("trstenko" below). While it
-// runs as root, NetworkManager allows all of this already.
-//
-// TODO on the board: confirm the user the unit runs as, and that these
-// actions are enough for `nmcli device wifi hotspot` and `connect`.
+// TODO on the board: confirm these actions are enough for `nmcli device wifi
+// hotspot` and `connect`, and for `systemctl reboot` from a service.
 polkit.addRule(function (action, subject) {
     if (subject.user !== "trstenko") {
         return polkit.Result.NOT_HANDLED;
@@ -17,6 +19,17 @@ polkit.addRule(function (action, subject) {
         action.id === "org.freedesktop.NetworkManager.settings.modify.system" ||
         action.id === "org.freedesktop.NetworkManager.wifi.share.protected" ||
         action.id === "org.freedesktop.NetworkManager.wifi.scan") {
+        return polkit.Result.YES;
+    }
+    if (action.id === "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") === "trstenko.service" &&
+        action.lookup("verb") === "restart") {
+        return polkit.Result.YES;
+    }
+    if (action.id === "org.freedesktop.login1.reboot" ||
+        action.id === "org.freedesktop.login1.reboot-multiple-sessions" ||
+        action.id === "org.freedesktop.login1.power-off" ||
+        action.id === "org.freedesktop.login1.power-off-multiple-sessions") {
         return polkit.Result.YES;
     }
     return polkit.Result.NOT_HANDLED;

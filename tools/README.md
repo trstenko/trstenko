@@ -57,7 +57,7 @@ Useful flags:
     python -m tools.emulator --urgency urgent --grace 20
     python -m tools.emulator --size-mb 400 --free-mb 256    # no room
     python -m tools.emulator --kbps 200                     # slow download
-    python -m tools.emulator --repo majcek210/trstenko     # the real feed
+    python -m tools.emulator --repo trstenko/trstenko     # the real feed
 
 ### Without a window
 

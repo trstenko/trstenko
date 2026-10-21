@@ -12,7 +12,7 @@ DEFAULT_DATA_ROOT = os.environ.get("TRSTENKO_DATA", "/var/lib/trstenko")
 # Releases live apart from settings on purpose: rolling a release back
 # must not roll back what the user told the device.
 DEFAULT_INSTALL_ROOT = os.environ.get("TRSTENKO_ROOT", "/opt/trstenko")
-DEFAULT_REPO = "majcek210/trstenko"
+DEFAULT_REPO = "trstenko/trstenko"
 
 # "dev" and "beta" are the same thing: releases marked prerelease on GitHub.
 # Both spellings are accepted because the workflow says dev and the research

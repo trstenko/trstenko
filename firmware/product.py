@@ -41,7 +41,7 @@ SUPPORT_UNTIL = "2031-09-01"
 
 # Somewhere a vulnerability report lands. CRA and EN 18031 both want one, and
 # a repository with no contact gets its problems posted publicly instead.
-SECURITY_CONTACT = "https://github.com/majcek210/trstenko/security/advisories"
+SECURITY_CONTACT = "https://github.com/trstenko/trstenko/security/advisories"
 
 # The device talks, so the AI Act's transparency rule (Art. 50, from Aug
 # 2026) applies: a person has to be able to tell they are talking to software.

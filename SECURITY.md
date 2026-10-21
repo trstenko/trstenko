@@ -5,7 +5,7 @@ to listen through one, take one over, or put software on one that its owner
 did not ask for, please tell us before you tell anyone else.
 
 **Where:** open a private advisory at
-<https://github.com/majcek210/trstenko/security/advisories>. That reaches us
+<https://github.com/trstenko/trstenko/security/advisories>. That reaches us
 without the report being public first.
 
 **What helps:** the firmware version (it is on the device's own page, under

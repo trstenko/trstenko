@@ -148,7 +148,7 @@ class Emulator(tk.Tk):
 
         # Trust the emulated feed's throwaway key, so signatures are
         # required here even though the shipped key list is still empty.
-        config = UpdateConfig(repo=args.repo or "majcek210/trstenko (emulated)",
+        config = UpdateConfig(repo=args.repo or "trstenko/trstenko (emulated)",
                               data_root=args.data_root,
                               install_root=args.data_root,
                               extra_keys=([self.releases.public_key]

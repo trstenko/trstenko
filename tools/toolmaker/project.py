@@ -37,7 +37,8 @@ def folder_of(root, project_id):
     base = os.path.realpath(root)
     folder = os.path.realpath(os.path.join(base, project_id))
     if os.path.dirname(folder) != base:
-        raise ProjectError("an id may hold a-z, 0-9, dots and dashes")
+        raise ProjectError("%s points outside the projects folder; move it "
+                           "into %s" % (project_id, base))
     return folder
 
 
@@ -49,6 +50,10 @@ def listing(root):
         path = os.path.join(root, name, "tool.json")
         if not _ID.match(name) or not os.path.isfile(path):
             continue
+        try:
+            folder_of(root, name)
+        except ProjectError:
+            continue        # a link to a folder elsewhere; it cannot be opened
         title = name
         try:
             with open(path, encoding="utf-8") as fh:

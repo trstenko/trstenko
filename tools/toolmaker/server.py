@@ -23,7 +23,7 @@ from . import project
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(HERE, "static", "index.html")
 FONT = os.path.join(os.path.dirname(os.path.dirname(HERE)), "firmware",
-                    "webui", "static", "fonts", "quicksand.woff2")
+                    "webui", "static", "fonts", "unbounded.woff2")
 MAX_BODY = 512 * 1024
 
 
@@ -84,7 +84,7 @@ class Handler(BaseHTTPRequestHandler):
                     page = fh.read().replace("__TOKEN__", self.token)
                 return self._send(200, page.encode("utf-8"),
                                   "text/html; charset=utf-8")
-            if method == "GET" and parts == ["quicksand.woff2"]:
+            if method == "GET" and parts == ["unbounded.woff2"]:
                 with open(FONT, "rb") as fh:
                     return self._send(200, fh.read(), "font/woff2")
             # A download is a plain link, which cannot carry a header.

@@ -617,7 +617,7 @@ def scenario_page_gzip(report, root):
                  "%d -> %d" % (len(plain), len(packed)))
     report.check("fonts and images are not compressed again, and nothing "
                  "outside the page is",
-                 page + "fonts/quicksand.woff2.gz" not in names
+                 page + "fonts/unbounded.woff2.gz" not in names
                  and page + "icons/icon-32.png.gz" not in names
                  and not any(n.endswith(".gz") and not n.startswith(page)
                              for n in names))

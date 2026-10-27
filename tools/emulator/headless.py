@@ -3752,7 +3752,7 @@ def scenario_web_servers(report, root):
         results["page"] = request("GET", "/", None, None)
         results["script"] = request("GET", "/app.js", None, None)
         results["module"] = request("GET", "/js/views/updates.js", None, None)
-        results["font"] = request("GET", "/fonts/quicksand.woff2", None, None)
+        results["font"] = request("GET", "/fonts/unbounded.woff2", None, None)
         results["strings"] = request("GET", "/i18n/sl.json", None, None)
         results["escape"] = request("GET", "/js/../../server.py", None, None)
         results["missing"] = request("GET", "/nothing-here", None, None)

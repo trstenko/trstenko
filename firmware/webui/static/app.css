@@ -1,7 +1,7 @@
 /* The device serves this from its own hotspot, with no route to the internet:
    the one font is in /fonts, and nothing here is loaded from anywhere else.
 
-   Brand (assets/brand/README.md): teal #1B7F9B is the eye glow and the only
+   Brand (assets/brand/kit-2026-10, the cast-shadow logo): teal #1B7F9B is the eye glow and the only
    colour that gives off light, dark #12191D is the screen when it is off,
    paper #FFFDF8 is the knockout. Terracotta stays off the page; it is the
    colour of the accessories. Two themes from one set of names: light is paper,
@@ -10,17 +10,19 @@
    Radii follow the eye: corners are generous, never sharp. Touch targets are
    at least 44px. State changes take 150ms. */
 
+/* Unbounded, the brand's heading face, subset to Latin plus č š ž ć đ,
+   weights 500-700 (SIL OFL). Body text stays the system font. */
 @font-face {
-  font-family: "Quicksand";
-  src: url("/fonts/quicksand.woff2") format("woff2");
-  font-weight: 300 700;
+  font-family: "Unbounded";
+  src: url("/fonts/unbounded.woff2") format("woff2");
+  font-weight: 500 700;
   font-display: swap;
 }
 
 :root {
   --teal: #1B7F9B; --dark: #12191D; --paper: #FFFDF8;
 
-  --font-display: "Quicksand", ui-rounded, system-ui, sans-serif;
+  --font-display: "Unbounded", system-ui, sans-serif;
   --font-body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
@@ -295,8 +297,13 @@ a.banner:hover { filter: brightness(1.04); }
 
 .rail { position: fixed; left: 0; top: 0; bottom: 0; width: var(--rail-w); flex-direction: column; gap: 4px; padding: 28px 16px 24px; background: var(--surface); border-right: 1px solid var(--line); }
 .rail-brand { display: flex; align-items: center; gap: 12px; padding: 0 8px 24px; }
-.wordmark { font-family: var(--font-display); font-weight: 700; font-size: 20px; }
-.rail-brand .wordmark { font-size: 22px; }
+/* The logo's wordmark, drawn from the kit's outlines and filled with the text
+   colour, so it follows the theme. The word stays in the markup for readers. */
+.wordmark { display: inline-block; width: 118px; height: 19px; background: currentColor;
+  -webkit-mask: url("/icons/wordmark.svg") no-repeat left center / contain;
+  mask: url("/icons/wordmark.svg") no-repeat left center / contain;
+  overflow: hidden; white-space: nowrap; text-indent: 100%; }
+.rail-brand .wordmark { width: 131px; height: 21px; }
 .navi { display: flex; align-items: center; gap: 12px; min-height: 46px; padding: 0 12px; border-radius: 14px; color: var(--text-2); text-decoration: none; font-weight: 600; transition: background var(--dur), color var(--dur); }
 .navi:hover { background: var(--surface-2); color: var(--text); }
 .navi[aria-current="page"] { background: var(--accent-soft); color: var(--accent-ink); }

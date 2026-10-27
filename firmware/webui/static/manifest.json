@@ -7,6 +7,8 @@
   "theme_color": "#12191d",
   "icons": [
     {"src": "/icons/icon-180.png", "sizes": "180x180", "type": "image/png"},
-    {"src": "/icons/icon-240.png", "sizes": "240x240", "type": "image/png"}
+    {"src": "/icons/icon-240.png", "sizes": "240x240", "type": "image/png"},
+    {"src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png"},
+    {"src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
   ]
 }

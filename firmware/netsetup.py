@@ -148,7 +148,9 @@ class NmcliNetwork(Network):
         self.interface = interface
         self.nmcli = nmcli
 
-    def _run(self, *args, timeout=COMMAND_TIMEOUT):
+    def _run(self, *args, timeout=COMMAND_TIMEOUT, secret=False):
+        """`secret`: the arguments carry a password, so nothing about the
+        command or its output goes to the log, only that it failed."""
         import subprocess
 
         try:
@@ -160,10 +162,13 @@ class NmcliNetwork(Network):
             raise NetworkError("The Wi-Fi could not be reached (%s)."
                                % type(exc).__name__)
         if done.returncode != 0:
-            # nmcli's own words are for the log. They never hold a password:
-            # it is passed as an argument and not echoed back.
-            log.warning("nmcli %s failed: %s", args[0] if args else "",
-                        (done.stderr or "").strip()[:200])
+            if secret:
+                log.warning("nmcli failed on a command that carried a "
+                            "password; its output is not logged")
+            else:
+                # nmcli's own words are for the log.
+                log.warning("nmcli %s failed: %s", args[0] if args else "",
+                            (done.stderr or "").strip()[:200])
             raise NetworkError("The Wi-Fi refused that.")
         return done.stdout
 
@@ -181,7 +186,7 @@ class NmcliNetwork(Network):
     def start_hotspot(self, ssid, password):
         self._run("device", "wifi", "hotspot", "ifname", self.interface,
                   "con-name", self.HOTSPOT_NAME, "ssid", ssid,
-                  "password", password)
+                  "password", password, secret=True)
 
     def stop_hotspot(self):
         try:
@@ -199,7 +204,7 @@ class NmcliNetwork(Network):
         if password:
             args += ["password", password]
         try:
-            self._run(*args, timeout=JOIN_TIMEOUT)
+            self._run(*args, timeout=JOIN_TIMEOUT, secret=True)
         except NetworkError:
             raise NetworkError("Couldn't join %s: wrong password or out of "
                                "range." % ssid)

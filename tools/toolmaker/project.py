@@ -32,7 +32,13 @@ def folder_of(root, project_id):
     if not isinstance(project_id, str) or not _ID.match(project_id) \
             or len(project_id) > 40:
         raise ProjectError("an id may hold a-z, 0-9, dots and dashes")
-    return os.path.join(root, project_id)
+    # The pattern already rules out "/" and "..". Checked again on the real
+    # path, so no id can ever name a folder outside the projects folder.
+    base = os.path.realpath(root)
+    folder = os.path.realpath(os.path.join(base, project_id))
+    if os.path.dirname(folder) != base:
+        raise ProjectError("an id may hold a-z, 0-9, dots and dashes")
+    return folder
 
 
 def listing(root):

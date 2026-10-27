@@ -148,27 +148,38 @@ class NmcliNetwork(Network):
         self.interface = interface
         self.nmcli = nmcli
 
-    def _run(self, *args, timeout=COMMAND_TIMEOUT, secret=False):
-        """`secret`: the arguments carry a password, so nothing about the
-        command or its output goes to the log, only that it failed."""
+    def _exec(self, args, timeout):
+        """Runs nmcli. Returns the finished process; logs nothing, so it is
+        safe for commands that carry a password."""
         import subprocess
 
         try:
-            done = subprocess.run((self.nmcli,) + args, capture_output=True,
-                                  text=True, timeout=timeout)
+            return subprocess.run((self.nmcli,) + tuple(args),
+                                  capture_output=True, text=True,
+                                  timeout=timeout)
         except subprocess.TimeoutExpired:
             raise NetworkError("The Wi-Fi did not answer in time.")
         except OSError as exc:
             raise NetworkError("The Wi-Fi could not be reached (%s)."
                                % type(exc).__name__)
+
+    def _run(self, *args, timeout=COMMAND_TIMEOUT):
+        """A command with no password in it: nmcli's own words go to the log
+        when it fails."""
+        done = self._exec(args, timeout)
         if done.returncode != 0:
-            if secret:
-                log.warning("nmcli failed on a command that carried a "
-                            "password; its output is not logged")
-            else:
-                # nmcli's own words are for the log.
-                log.warning("nmcli %s failed: %s", args[0] if args else "",
-                            (done.stderr or "").strip()[:200])
+            log.warning("nmcli %s failed: %s", args[0] if args else "",
+                        (done.stderr or "").strip()[:200])
+            raise NetworkError("The Wi-Fi refused that.")
+        return done.stdout
+
+    def _run_secret(self, args, timeout=COMMAND_TIMEOUT):
+        """A command that carries a password: the log says only that it
+        failed, never the command or nmcli's output."""
+        done = self._exec(args, timeout)
+        if done.returncode != 0:
+            log.warning("nmcli failed on a command that carried a password; "
+                        "its output is not logged")
             raise NetworkError("The Wi-Fi refused that.")
         return done.stdout
 
@@ -184,9 +195,9 @@ class NmcliNetwork(Network):
         return parse_scan(out)
 
     def start_hotspot(self, ssid, password):
-        self._run("device", "wifi", "hotspot", "ifname", self.interface,
-                  "con-name", self.HOTSPOT_NAME, "ssid", ssid,
-                  "password", password, secret=True)
+        self._run_secret(("device", "wifi", "hotspot", "ifname",
+                          self.interface, "con-name", self.HOTSPOT_NAME,
+                          "ssid", ssid, "password", password))
 
     def stop_hotspot(self):
         try:
@@ -204,7 +215,7 @@ class NmcliNetwork(Network):
         if password:
             args += ["password", password]
         try:
-            self._run(*args, timeout=JOIN_TIMEOUT, secret=True)
+            self._run_secret(args, timeout=JOIN_TIMEOUT)
         except NetworkError:
             raise NetworkError("Couldn't join %s: wrong password or out of "
                                "range." % ssid)

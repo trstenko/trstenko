@@ -11,6 +11,10 @@ on:
       - "tools/eval/results/**"
   workflow_dispatch:
 
+# The checks only read the code. The Discord step uses its own webhook secret.
+permissions:
+  contents: read
+
 # A new push to a branch makes the run for the old one worthless.
 concurrency:
   group: checks-${{ github.ref }}

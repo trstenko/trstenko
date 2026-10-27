@@ -267,6 +267,52 @@ def scenario_setup_parts(report, root):
                  setupcard.cached(dict(card)) is same
                  and setupcard.cached(None) is None)
 
+    _check_failed_join_log(report)
+
+
+def _check_failed_join_log(report):
+    """nmcli failing on a command that carries a password: the log says it
+    failed and holds nothing of the command or its output."""
+    import logging
+    import subprocess
+    import types
+
+    secret = "hunter2-wifi-pass"
+
+    def refuse(argv, **kw):
+        return types.SimpleNamespace(returncode=10, stdout="",
+                                     stderr="Error: " + " ".join(argv))
+
+    lines = []
+
+    class Keep(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    logger = logging.getLogger("trstenko.netsetup")
+    keep = Keep()
+    logger.addHandler(keep)
+    real = subprocess.run
+    subprocess.run = refuse
+    try:
+        net = netsetup.NmcliNetwork(nmcli="nmcli")
+        refused = 0
+        for attempt in (lambda: net.join("Home", secret),
+                        lambda: net.start_hotspot("Trstenko-1", secret),
+                        lambda: net.scan()):
+            try:
+                attempt()
+            except netsetup.NetworkError:
+                refused += 1
+    finally:
+        subprocess.run = real
+        logger.removeHandler(keep)
+    report.check("a failed join or hotspot logs that it failed, never the "
+                 "password; other failures still log nmcli's words",
+                 refused == 3 and len(lines) == 3
+                 and not any(secret in line for line in lines)
+                 and "Error: nmcli" in lines[2], str(lines))
+
 
 def scenario_factory_reset(report, root):
     """Factory reset: asks for the PIN, wipes on the way out, restarts, and

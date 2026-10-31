@@ -34,6 +34,7 @@
   "alert_failing": "{name}: stalno prihaja do napake.",
   "assistant_no_key": "Dodajte ključ API, da vam lahko Trstenko odgovarja.",
   "assistant_no_stt": "Trstenko vas še ne more slišati: za razpoznavo govora je potreben ključ.",
+  "assistant_no_stt_language": "Trstenko vas v tem jeziku še ne sliši: vaš ponudnik umetne inteligence z njim še ni preizkušen. Izberite drugega ponudnika ali jezik.",
   "assistant_no_voice": "Noben glas ni nameščen.",
   "assistant_no_wake_word": "Besede za prebujanje ni bilo mogoče naložiti.",
   "assistant_tables": "Pomočnik je izklopljen: tabele se niso naložile.",

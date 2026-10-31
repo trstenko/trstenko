@@ -351,7 +351,11 @@ class Worker:
             return self._done(job, 0, False)
         plan = self._plan(lang)
         if not plan.ok:
-            self._fail(job, "no_stt", strings("err_no_stt"))
+            # A key is there but no provider is cleared for this language:
+            # asking for a key would send the owner looking for the wrong fix.
+            self._fail(job, "no_stt", strings(
+                "err_no_stt_language" if plan.reason == "language"
+                else "err_no_stt"))
             return
 
         primary = data["assistant"]["provider"]

@@ -1665,7 +1665,7 @@ def scenario_tools_registry(report, root):
         props = params["properties"]
         return (fn.get("strict") is True
                 and params.get("additionalProperties") is False
-                and sorted(params["required"]) == sorted(props))
+                and sorted(params.get("required", [])) == sorted(props))
 
     def plain_ok(node):
         fn = node["function"]
@@ -1695,9 +1695,10 @@ def scenario_tools_registry(report, root):
                  change["enum"] == ["up", "down", None]
                  and next(p for n, p in _all_props(plain[7])
                           if n == "change")["enum"] == ["up", "down"])
-    report.check("a tool with no arguments is still a valid schema",
+    report.check("a tool with no arguments is still a valid schema, with "
+                 "no empty required list (Groq refuses one)",
                  strict[5]["function"]["parameters"]
-                 == {"type": "object", "properties": {}, "required": [],
+                 == {"type": "object", "properties": {},
                      "additionalProperties": False}
                  and plain[5]["function"]["parameters"]
                  == {"type": "object", "properties": {}})

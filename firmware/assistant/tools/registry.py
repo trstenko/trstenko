@@ -295,7 +295,11 @@ def render(spec, flavour):
         properties[name] = prop
     parameters = {"type": "object", "properties": properties}
     if flavour == STRICT:
-        parameters["required"] = required
+        # An empty `required` beside no properties is refused by Groq
+        # ("'required' present but 'properties' is missing"), so a tool with
+        # no arguments leaves it out. Every property is still required.
+        if required:
+            parameters["required"] = required
         parameters["additionalProperties"] = False
     elif required:
         parameters["required"] = required

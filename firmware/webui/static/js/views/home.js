@@ -148,7 +148,8 @@ export async function render(root) {
     if (assistant.ok) {
       for (const a of assistant.data.alerts || []) {
         const [kind, glyph, href] = ALERTS[a.kind] || ["warn", "alert", null];
-        found.push(banner(t("assistant_" + a.kind), kind, glyph, href));
+        const key = a.kind === "no_stt" && a.reason === "language" ? "assistant_no_stt_language" : "assistant_" + a.kind;
+        found.push(banner(t(key), kind, glyph, href));
       }
       for (const b of assistant.data.banners || []) {
         found.push(banner(t("banner_" + b.kind, {provider: label(b.provider)}), "danger", "key", "#/settings/assistant"));

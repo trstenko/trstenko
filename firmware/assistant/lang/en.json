@@ -21,6 +21,7 @@
   "err_generic": "Something went wrong. Please try again.",
   "err_no_key": "I need an API key before I can answer. You can add one on the setup page.",
   "err_no_stt": "I can't hear you yet. You can add a speech recognition key on the setup page.",
+  "err_no_stt_language": "This AI provider can't understand this language yet. You can change the language or the provider on the setup page.",
   "time_is": "It's {time}.",
   "time_unknown": "I don't know the time yet.", 
   "snoozed": "Okay, snoozed.",

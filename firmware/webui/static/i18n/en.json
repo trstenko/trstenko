@@ -34,6 +34,7 @@
   "alert_failing": "{name} keeps failing.",
   "assistant_no_key": "Add an API key so Trstenko can answer.",
   "assistant_no_stt": "Trstenko cannot hear you yet: speech recognition needs a key.",
+  "assistant_no_stt_language": "Trstenko cannot hear you in this language yet: your AI provider has not been tested with it. Pick another provider or language.",
   "assistant_no_voice": "No voice is installed.",
   "assistant_no_wake_word": "The wake word could not be loaded.",
   "assistant_tables": "The assistant is off: its tables did not load.",

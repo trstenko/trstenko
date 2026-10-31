@@ -21,6 +21,7 @@
   "err_generic": "Nekaj je šlo narobe. Poskusite znova.",
   "err_no_key": "Preden lahko odgovorim, potrebujem API ključ. Dodate ga lahko na strani za nastavitve.",
   "err_no_stt": "Zaenkrat vas ne slišim. Ključ za razpoznavo govora dodate na strani za nastavitve.",
+  "err_no_stt_language": "Ta ponudnik umetne inteligence slovenščine še ne razume. Na strani za nastavitve lahko izberete angleščino ali drugega ponudnika.",
   "time_is": "Zdaj je {time}.",
   "time_unknown": "Časa še ne poznam.", 
   "snoozed": "V redu, odloženo.",

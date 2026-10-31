@@ -1,11 +1,14 @@
 name: checks
 
-# The repo is private and runs on the free minutes, so this runs once per
-# change and no more. A pull request is tested as it would be after the merge,
-# which is why there is no second run on main; run it by hand from the Actions
-# tab when main needs checking on its own.
+# The repo is public, so Actions minutes are free: run on every pull request
+# and again on main after each merge, so main's own state is always checked.
 on:
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "tools/eval/results/**"
+  push:
+    branches: [main]
     paths-ignore:
       - "**.md"
       - "tools/eval/results/**"

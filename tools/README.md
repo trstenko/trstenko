@@ -11,6 +11,11 @@ starts depending on it.
 | `face/bake.py` | Writes `firmware/face/data/faces.json` from that. |
 | `face/preview.py` | The face on a PC, with per-frame SPI cost. |
 | `check_layout.py` | Enforces the firmware/tools split. |
+| `eval/` | Scores an AI provider on fixed English and Slovenian cases. See below. |
+| `toolmaker/` | The tool creator, for writing third-party tools. See below. |
+| `release.py` | Builds and signs a release bundle. See below. |
+| `make_chimes.py` | Generates the reminder and timer chimes. |
+| `voices/` | Installs Piper and the voices on a development PC. |
 | `wakeword/` | Trains the "Trstenko" micro-wake-word model that ships on a sold unit. Docker, not pip -- see its own README. |
 
     pip install -r tools/requirements.txt
@@ -64,8 +69,8 @@ Useful flags:
     python -m tools.emulator.headless
 
 The same rig on a clock the test controls, so a three-second button hold costs
-no real time. Twelve scenarios, no sound card needed, and it exits non-zero when one of them does
-something other than what it says. This is the test suite; run it after
+no real time. No sound card needed, and it exits non-zero when a scenario does something other
+than what it says. This is the test suite; run it after
 touching `firmware/device.py`, the renderer, or anything in `firmware/updates/`.
 
 ### Audio
@@ -145,8 +150,17 @@ would read. **Export** writes the `.trsttool`.
 
 The tool runs here the way it will on a device: in a process of its own that
 may not open sockets, start programs or touch files, with the internet reached
-only through the hosts it listed. A device cannot install one yet; that page
-is the next step of plan 10.
+only through the hosts it listed. A device installs it from the Tools screen in
+its settings page.
+
+## Scoring a provider
+
+    python -m tools.eval.run --provider gemini --secrets %TEMP%\trstenko-emulator\secrets.json
+
+Runs the cases in `eval/cases_en.jsonl` and `cases_sl.jsonl` against a real model, each on a
+fresh device with the real tools and prompt, and writes a report to `eval/results/`. The key
+comes from the emulator's `secrets.json` (enter it on the emulator's page) or from
+`TRSTENKO_EVAL_KEY`. It makes real requests, so `--limit` runs only the first few.
 
 ## Cutting a release
 

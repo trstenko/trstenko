@@ -1,130 +1,113 @@
 # Trstenko
 
-Code for the Trstenko product (Moje podjetje project).
+Trstenko is a voice assistant that sits on your desk: a 10 cm cube with a small screen for a
+face, a microphone, a speaker and a switch that physically cuts the microphone's power. Say
+"Trstenko", ask something, and it answers out loud. It sets reminders and timers, remembers what
+you tell it to, and changes its own volume. It speaks English and Slovenian.
 
-Everything that is not code lives one level up, outside version control:
-**`../docs/`** for the plan, the costing and the order, **`../cad/`** for the
-enclosure and **`../assets/`** for the brand and the renders. Start at
-`../docs/README.md`.
+It is built by four students for the Slovenian *Moje podjetje* competition (April 2027).
 
-## The one rule about layout
-
-**`firmware/` is what gets copied onto the robot. Nothing else is.**
-
-If a module needs a window, a keyboard, an After Effects export, or a folder
-that only exists on a development machine, it goes in `tools/`. That includes
-things that look like firmware: the face preview draws the real face with the
-real renderer and still belongs in `tools/`, because it needs tkinter and the
-robot has no display server.
-
-The rule is checked rather than remembered:
-
-    python -m tools.check_layout
-
-It fails if anything under `firmware/` imports `tools`, imports tkinter,
-reads a path inside `docs/`, or imports a third-party package at module level
-where a late import would let the device boot without it.
+## How it works
 
 ```
-firmware/            on the robot
-  main.py            systemd runs this
-  device.py          the loop: events in, a face out
-  pipeline.py        the interface the voice loop will implement
-  hal/               base.py is the contract, pi.py is the board
-  face/              the face, plus data/faces.json baked from the AE export
-  updates/           checking, preflight, download, verify, install, roll back
-                     signing.py verifies who made a release (Ed25519)
-  deploy/            systemd units and the first-install steps
-  webui/             the page the device serves over its own hotspot
-  VERSION            what the updater compares releases against
-
-tools/               never on the robot
-  emulator/          a Trstenko made of nothing
-  face/              the AE importer, the bake step, the desktop preview
-  release.py         keygen, build a bundle, sign it
-  check_layout.py    enforces the rule above
+wake word ("Trstenko")  ->  record until you stop talking  ->  speech to text
+   ->  a language model, which can call the device's tools (reminders, timers, memory, volume)
+   ->  Piper text to speech on the device  ->  the face animates the whole time
 ```
 
-## Run it without any hardware
+- **You bring the AI.** The owner pastes in their own API key for Google Gemini, OpenAI, Grok,
+  Groq, or Ollama running on their own PC. Trstenko has no server of its own; your questions go
+  only to the provider you picked.
+- **The wake word and the speech output run on the device.** Nothing leaves it until it hears its
+  name, and the mute switch takes the microphone away in hardware, not in software.
+- **It is set up from a phone.** A new device opens its own Wi-Fi hotspot and shows a QR code; its
+  settings page is served by the device itself.
+- **It updates itself.** It checks this repo's GitHub releases, asks before installing (or, for an
+  urgent fix, tells you and goes ahead), and rolls back on its own if a new version does not start.
+- **It can take third-party tools.** A `.trsttool` file adds a new ability. The device limits
+  what a tool is given, but it cannot yet guarantee a tool stays inside those limits, so install
+  one only if you trust whoever wrote it.
 
-    pip install -r tools/requirements.txt
-    python -m tools.emulator
+The hardware is a Raspberry Pi 3 A+ (512 MB of RAM, which is the limit everything is designed
+around), a 2.4" 320 × 240 screen, a ReSpeaker Lite USB microphone and a small speaker, in a
+3D-printed shell. **The hardware has not been built yet.** Everything here runs and is tested in
+an emulator on a normal PC.
 
-The emulator runs the real `Device`, the real face and the real update manager
-against emulated hardware, and gives you the things you otherwise need a
-soldered board to reach: three buttons with real press timing, the mute switch,
-an SD card you can fill up, a network you can drop, and a release feed you can
-publish to. It also serves the device's own update page at
-<http://127.0.0.1:8080>.
+## What is in this repo
 
-Audio can be real. Point it at this computer's microphone and speakers and a
-turn records what you say, ends when you stop talking, and plays it back — a
-parrot standing in for TTS, at the robot's own 16kHz mono format, through the
-same HAL the Pi uses. Needs `sounddevice`; without it the level slider keeps
-working. See `tools/emulator/audio.py`.
+```
+firmware/        what runs on the device, and nothing else
+  main.py        the entry point systemd starts
+  device.py      the main loop: events in, a face out
+  assistant/     wake word to spoken reply: providers, speech to text, tools, text to speech
+  scheduler/     reminders and timers
+  face/          draws the animated face (data baked from After Effects)
+  webui/         the settings page the device serves to your phone
+  updates/       checking, downloading, verifying and installing releases, and rolling back
+  hal/           the hardware layer: base.py is the contract, pi.py is the real board
+  storage/       the SQLite database and its migrations
+  deploy/        systemd units and first-install steps
 
-For the version with no window, which is also the test suite:
+tools/           for development; never copied onto the device
+  emulator/      a Trstenko in a window, and the test suite
+  eval/          scores each AI provider on a fixed set of questions
+  toolmaker/     a page for writing and testing third-party tools
+  face/          imports the After Effects animation and bakes it for the device
+  release.py     builds and signs a release
+  wakeword/      trains the "Trstenko" wake-word model (Docker)
+```
 
-    python -m tools.emulator.headless
+The split is enforced: `python -m tools.check_layout` fails if anything in `firmware/` imports
+from `tools/`, needs a display server, or imports a package at load time that would stop the
+device from booting without it.
 
-Twenty-one scenarios, a hundred-odd assertions: boot, a full conversation, a turn that
-fails, the mute switch pulled mid-sentence, the setup gesture, an optional
-update, an urgent one, a full card, a dropped connection, a corrupted bundle,
-what actually reaches the panel, whether anything was left lit on it, the
-audio path end to end against a canned microphone, and the whole install
-path — apply, restart, confirm, and both ways a bad release gets rolled back.
-No sound card and no Pi needed. Run it after touching `device.py`, the
-renderer, or anything under `updates/`.
+## Try it without the hardware
 
-## Run it on the robot
+```
+pip install -r tools/requirements.txt
+python -m tools.emulator
+```
 
-    pip install -r firmware/requirements-pi.txt
-    python -m firmware.main
+A window with the face and the device's buttons, mute switch, network and SD card, all of which
+you can break on purpose. Its settings page is at <http://127.0.0.1:8080>; paste an API key there
+to talk to a real model. It can use your PC's microphone and speakers. Details in
+[tools/README.md](tools/README.md).
 
-Refuses to start anywhere that is not a Raspberry Pi, and says to use the
-emulator instead. There is no automatic fake-hardware fallback: firmware that
-silently substitutes a stub is firmware that ships untested.
+The tests are the same emulator without a window, on a clock the tests control:
 
-## The face
+```
+python -m tools.emulator.headless
+```
 
-`firmware/face/` draws it; `tools/face/preview.py` shows it on a PC at the
-panel's real 320 × 240 with the SPI cost of every frame. See
-[firmware/face/README.md](firmware/face/README.md).
+CI runs this, the layout check and a release build on every pull request.
 
-The animation comes out of After Effects. `tools/face/bake.py` reads the
-export from `../assets/brand/face-states/ae/faces.json`, converts AE's
-(speed, influence) eases into bezier handles, and writes
-`firmware/face/data/faces.json`. Re-export from AE, then:
+## On the device
 
-    python -m tools.face.bake            # rewrite the baked data
-    python -m tools.face.bake --check    # exit 1 if it is stale
+```
+pip install -r firmware/requirements-pi.txt
+python -m firmware.main
+```
 
-The robot reads only the baked file. That is the whole reason the conversion
-lives in `tools/`.
+It refuses to start on anything that is not a Raspberry Pi. There is no fallback to fake
+hardware, so firmware that passes on the board was tested on the board. First-install steps are
+in [firmware/deploy/](firmware/deploy/).
 
-## Publishing an update
+## Releases
 
-    git tag -a v0.4.1 -m "Faster wake word" && git push --tags
+```
+git tag -a v0.4.1 -m "Faster wake word" && git push --tags
+```
 
-GitHub Actions builds the bundle, signs it, and publishes the release; the
-devices do the rest. A tag with a suffix — `v0.5.0-beta.1` — is a prerelease
-and only reaches devices set to the dev channel. Needs the
-`TRSTENKO_SIGNING_KEY` secret, and `firmware/VERSION` has to match the tag.
-Details in [firmware/updates/README.md](firmware/updates/README.md).
+GitHub Actions builds the bundle, signs it and publishes the release; devices find it from there.
+A tag with a suffix (`v0.5.0-beta.1`) only reaches devices on the dev channel. `firmware/VERSION`
+has to match the tag. The update only replaces the app, never the operating system: a release
+that needs a newer system is refused with a message to reflash the card. Details in
+[firmware/updates/README.md](firmware/updates/README.md).
 
-## Updates
+## More
 
-The device checks GitHub releases and decides whether to ask or to tell:
-optional updates wait for the user, urgent ones announce themselves and go
-ahead. Either way one yes covers the whole thing: download, unpack, swap the
-symlink, restart. If the new release does not come up, the device goes back to
-the previous one on its own, without a laptop or a card reader.
-
-The checks are not skipped for urgent releases, and neither the download nor
-the install starts while someone is mid-conversation.
-
-**It updates the app, not the operating system.** A release needing a new
-kernel, a new apt package or a newer Python is refused with a message saying
-the card needs reflashing, rather than half-applied. Details and the reasoning
-in [firmware/updates/README.md](firmware/updates/README.md); the first-install
-steps and the systemd units in [firmware/deploy/](firmware/deploy/).
+- [tools/README.md](tools/README.md): the emulator, the tool creator, the face pipeline, releases
+- [firmware/face/README.md](firmware/face/README.md): how the face is drawn
+- [firmware/updates/README.md](firmware/updates/README.md): how updates are checked and installed
+- [SECURITY.md](SECURITY.md): how to report a security problem;
+  [SECURITY-REVIEW-2026-10.md](SECURITY-REVIEW-2026-10.md) is the October 2026 review

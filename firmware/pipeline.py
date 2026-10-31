@@ -1,10 +1,9 @@
 """The voice loop, as the device sees it.
 
-Wake word, speech to text, the model call, tools, and text to speech are not
-written yet -- they are Phase 2 in `docs/prototype-plan.md`. What is fixed is
-the shape they have to present to the device, and that is here, so the face and
-the state machine can be finished and tested against the emulator's scripted
-pipeline before a single API key exists.
+Wake word, speech to text, the model call, tools, and text to speech live in
+`firmware/assistant/`. This module fixes the shape they present to the device,
+so the face and the state machine can be tested against the emulator's scripted
+pipeline without an API key.
 
 The contract is polled, not callback-driven, and never blocks. The device loop
 runs at 30Hz to draw a face; a `requests.post` to a model provider on that

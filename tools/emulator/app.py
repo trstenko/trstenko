@@ -681,27 +681,42 @@ class Emulator(tk.Tk):
         self.log("pairing PIN for the page: %s" % self.auth.pin)
 
     def _wire_assistant(self, device):
-        """The real voice loop, if there is a key to run it with and nobody
-        asked for the scripted one. The window's microphone and speaker are
-        what it hears and speaks through, exactly as the robot's are."""
+        """The real voice loop, wired the way the robot wires it: always, key
+        or no key. Its commands are what the page's Assistant, Usage,
+        Memories, Tools and Privacy screens and the key form call, so leaving
+        it out answered all of them with "unknown command". The window's
+        microphone and speaker are what it hears and speaks through.
+
+        `--scripted` still swaps the conversation for the scripted one, for
+        looking at the face without a key; the page keeps working."""
         from firmware.storage.settings import PROVIDERS
 
         if self.assistant is not None:
             self.assistant.close()
             self.assistant = None
         self.audio.threaded = False
-        keyed = device.secrets is not None and any(
-            device.secrets.has_key(p) for p in PROVIDERS if p != "ollama")
-        if self.args.scripted or not keyed:
-            if not self.args.scripted:
-                self.log("no API key in %s: using the scripted conversation"
-                         % os.path.join(self.data_root, "secrets.json"))
-            return
         from firmware.assistant.wiring import wire_assistant
 
-        self.assistant = wire_assistant(device, self.hal, self.data_root)
+        scripted = self.pipeline if isinstance(
+            self.pipeline, ScriptedPipeline) else ScriptedPipeline(
+                self.hal.speaker, seed=self.args.seed, bridge=self.audio)
+        self.assistant = wire_assistant(device, self.hal, self.data_root,
+                                        start_audio=not self.args.scripted)
+        if self.args.scripted or self.assistant.pipeline is None:
+            # No pipeline means the provider tables did not load; the
+            # assistant has said why in the log and on the page.
+            device.pipeline = self.pipeline = scripted
+            if self.args.scripted:
+                self.log("scripted conversation (--scripted); the page is "
+                         "live")
+            return
         self.pipeline = self.assistant.pipeline
         self.audio.threaded = self.assistant.audio.state != "off"
+        keyed = device.secrets is not None and any(
+            device.secrets.has_key(p) for p in PROVIDERS if p != "ollama")
+        if not keyed:
+            self.log("no API key yet: add one on the page (Settings > "
+                     "Assistant), or run with --scripted to try the face")
         self.log("the real assistant is on: %s" % (
             "ready" if self.assistant.status()["ready"] else
             ", ".join(a["kind"] for a in self.assistant.status()["alerts"])))

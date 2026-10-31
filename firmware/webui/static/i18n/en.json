@@ -349,7 +349,7 @@
   "tools_no_permissions": "No internet, no storage",
   "tools_remove": "Remove",
   "tools_install": "Install a tool",
-  "tools_file_hint": "A .trsttool file, made with the tool creator.",
+  "tools_file_hint": "A .trsttool file.",
   "tools_trust_note": "An installed tool is code you are trusting.",
   "tools_too_big": "That file is too large to be a tool.",
   "tools_install_title": "Install “{name}”?",

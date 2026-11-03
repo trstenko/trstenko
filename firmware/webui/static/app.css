@@ -20,7 +20,7 @@
 }
 
 :root {
-  --teal: #1B7F9B; --dark: #12191D; --paper: #FFFDF8;
+  --teal: #1B7F9B; --dark: #12191D; --paper: #FFFDF8; --eye: #EAF6F9;
 
   --font-display: "Unbounded", system-ui, sans-serif;
   --font-body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -108,6 +108,7 @@ body.bare.wide .content { max-width: 520px; padding-top: 8px; gap: 16px; }
   .main { margin-left: var(--rail-w); padding: 40px 56px; }
   .content { gap: 16px; margin: 0; }
   .grid2 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .content > .grid2 { margin-top: 18px; }
   body.bare .main { margin-left: 0; }
   body.bare .content { margin: 0 auto; padding-top: 96px; }
   body.bare.wide .content { padding-top: 24px; }
@@ -132,7 +133,9 @@ body.bare.wide .content { max-width: 520px; padding-top: 8px; gap: 16px; }
 .c-warn { color: var(--warn); }
 .mono { font-family: var(--font-mono); font-size: .9em; }
 .lead { font-weight: 600; font-size: 1.0625rem; overflow-wrap: anywhere; }
-.section-label { font-size: var(--fs-small); font-weight: 600; color: var(--text-2); padding: 12px 4px 0; }
+/* Section names are headings, set like the other h2s, not small grey labels. */
+.section-label { font-family: var(--font-display); font-weight: 700; font-size: var(--fs-h2); line-height: 1.3; color: var(--text); padding: 18px 4px 0; }
+.spread:has(> .section-label) { align-items: flex-end; }
 .note { color: var(--text-2); font-size: var(--fs-small); padding: 0 4px; }
 .center { text-align: center; }
 .plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; }
@@ -144,6 +147,17 @@ body.bare.wide .content { max-width: 520px; padding-top: 8px; gap: 16px; }
 .card.soft { background: var(--accent-soft); border-color: transparent; }
 a.card { text-decoration: none; color: var(--text); }
 .card-head { padding: 14px 18px 4px; }
+/* A box is for things you change. What is only read sits on the page:
+   an empty list is a sentence, and a list of facts has no frame. */
+.card:has(> .row.empty:only-child) { background: none; border: 0; }
+.card:has(> .row.empty:only-child) .row.empty { padding-left: 4px; min-height: 0; }
+.card:has(> .facts) { background: none; border: 0; padding-left: 4px; padding-right: 4px; }
+.plain-sec { padding: 6px 2px; }
+.plain-sec .card-head { padding: 0 0 6px; }
+.plain-sec .row { padding-left: 0; padding-right: 0; }
+.card.controls { border-radius: var(--r-md); }
+a.plain-sec { color: inherit; text-decoration: none; }
+a.plain-sec:hover .h2 { text-decoration: underline; text-underline-offset: 3px; }
 .row { display: flex; align-items: center; gap: 12px; min-height: 60px; padding: 10px 18px; color: var(--text); text-decoration: none; }
 .row + .row { border-top: 1px solid var(--line); }
 a.row { transition: background var(--dur); }
@@ -274,7 +288,8 @@ a.banner:hover { filter: brightness(1.04); }
 
 .screen { background: var(--screen); border: 1px solid var(--screen-line); border-radius: 18px; display: flex; align-items: center; justify-content: center; overflow: hidden; flex: none; }
 .screen svg { display: block; height: 100%; width: auto; max-width: 100%; }
-.screen rect { fill: var(--teal); }
+/* The eyes as the device and the website draw them: pale, with the teal glow. */
+.screen rect { fill: var(--eye); filter: drop-shadow(0 0 6px rgba(27, 127, 155, .7)); }
 .screen.asleep rect { opacity: .7; }
 .screen.home { height: 232px; }
 .screen.mini { width: 60px; height: 46px; border-radius: 12px; }
@@ -282,8 +297,8 @@ a.banner:hover { filter: brightness(1.04); }
 .screen.lock { width: 176px; height: 132px; border-radius: 16px; align-self: center; }
 .screen.setup { height: 128px; transition: height var(--dur) ease; }
 .screen.setup.big { height: 210px; }
-.facecard { padding: 12px; }
-.facecard .status-block { padding: 14px 6px 4px; }
+.facecard { padding: 0 0 8px; }
+.facecard .status-block { padding: 14px 2px 0; }
 
 /* ---- tab bar (phone) ---- */
 
@@ -338,8 +353,10 @@ a.banner:hover { filter: brightness(1.04); }
 .gridline { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--line); }
 .gridline.mid { top: 70px; }
 .y-max { position: absolute; right: 0; top: -18px; }
-.stat3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.stat3 > div { display: flex; flex-direction: column; gap: 2px; }
+.today-line { padding: 0 4px; font-weight: 600; }
+.builtin-line { padding: 0 4px; font-weight: 600; }
+.content > .grid2 { margin-top: 10px; }
+.chart-empty { padding: 18px 0 8px; }
 
 /* ---- first run ---- */
 
@@ -375,7 +392,7 @@ details[open] > summary svg { transform: rotate(180deg); }
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--tab-h) + 22px); z-index: 12; max-width: min(90vw, 28rem); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: var(--r-md); font-weight: 600; font-size: 15px; }
 
 @media (min-width: 900px) {
-  .facecard { display: flex; align-items: center; gap: 28px; padding: 14px; }
+  .facecard { display: flex; align-items: center; gap: 28px; padding: 0; }
   .facecard .status-block { padding: 0; }
   .screen.home { height: 208px; width: 272px; }
   .ring { flex-direction: row; align-items: center; gap: 24px; padding: 20px; }

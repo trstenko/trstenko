@@ -2,7 +2,7 @@
 // ones the owner installed (a .trsttool file) can be switched off or removed.
 
 import {api, clear, h, t, toast} from "/js/core.js";
-import {banner, confirmSheet, emptyRow, icon, sectionLabel, subHead, toggle} from "/js/ui.js";
+import {banner, confirmSheet, emptyRow, sectionLabel, subHead, toggle} from "/js/ui.js";
 
 // The eight built-in functions, as the four things an owner would call them.
 const BUILT_IN = ["timers", "nav_reminders", "memories", "volume"];
@@ -125,10 +125,7 @@ export async function render(root) {
     if (d.enabled_functions >= d.warn_from) body.append(banner(t("tools_many", {n: d.enabled_functions}), "warn"));
     body.append(
       sectionLabel(t("tools_built_in")),
-      h("section", {class: "card flush", "aria-label": t("tools_built_in")},
-        BUILT_IN.map((key) => h("div", {class: "row"},
-          h("span", {class: "row-ico"}, icon("lock", 20, 1.8)),
-          h("span", {class: "row-main"}, h("span", {class: "row-title"}, t(key)))))),
+      h("p", {class: "builtin-line"}, BUILT_IN.map((key) => t(key)).join(", ")),
       h("p", {class: "note"}, t("tools_built_in_note")),
       h("div", {class: "spread"}, sectionLabel(t("tools_installed")),
         h("span", {class: "small muted num"}, t("tools_on_count", {n: d.enabled_functions, max: d.max}))),

@@ -31,7 +31,8 @@ HARDWARE_REVISION = "A"
 # TODO before sale: the registered company name and address. GPSR requires
 # both on the product; these are placeholders and are deliberately obvious.
 MANUFACTURER = "Trstenko (Moje podjetje student company)"
-ADDRESS = "— address required before sale —"
+PLACEHOLDER_ADDRESS = "— address required before sale —"
+ADDRESS = PLACEHOLDER_ADDRESS
 COUNTRY = "Slovenia"
 
 # CRA: the period security updates are provided for, counted from first
@@ -114,7 +115,9 @@ def identity(data_root=None):
         "serial": serial(data_root),
         "firmware": str(version_mod.current()),
         "manufacturer": MANUFACTURER,
-        "address": ADDRESS,
+        # The page leaves the row out until there is a real address, so an
+        # owner does not read a note meant for the team.
+        "address": None if ADDRESS == PLACEHOLDER_ADDRESS else ADDRESS,
         "country": COUNTRY,
         "support_until": SUPPORT_UNTIL,
         "security_contact": SECURITY_CONTACT,

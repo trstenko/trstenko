@@ -34,17 +34,17 @@ export async function render(root) {
   const status = h("p", {class: "status"});
   const sub = h("p", {class: "muted", style: "margin-top:4px"});
   const homeScreen = facePanel(face, "home");
-  const faceCard = h("section", {class: "card facecard", "aria-label": t("status")},
+  const faceCard = h("section", {class: "facecard", "aria-label": t("status")},
     homeScreen, h("div", {class: "status-block", "aria-live": "polite"}, status, sub));
 
   const timerCount = h("span", {class: "label"});
   const timerRows = h("div");
-  const timers = h("section", {class: "card flush", "aria-labelledby": "h-timers"},
+  const timers = h("section", {class: "plain-sec", "aria-labelledby": "h-timers"},
     h("div", {class: "spread card-head"}, h("h2", {class: "h2", id: "h-timers"}, t("timers")), timerCount),
     timerRows);
   const nextText = h("p", {class: "lead"});
   const nextWhen = h("p", {class: "muted small"});
-  const next = h("section", {class: "card stack gap-s", "aria-labelledby": "h-next"},
+  const next = h("section", {class: "plain-sec stack gap-s", "aria-labelledby": "h-next"},
     h("div", {class: "spread"}, h("h2", {class: "h2", id: "h-next"}, t("next_reminder")),
       h("a", {class: "small", href: "#/reminders"}, t("all_reminders"))),
     nextText, nextWhen);
@@ -53,13 +53,13 @@ export async function render(root) {
   const volume = range("vol", 60);
   const quiet = toggle("quiet", false, (on) => save({quiet: {enabled: on}}));
   const quietSub = h("span", {class: "row-sub"});
-  const sound = h("section", {class: "card", "aria-label": t("sound")},
+  const sound = h("section", {class: "card controls", "aria-label": t("sound")},
     h("div", {class: "spread"}, h("label", {class: "field-label", for: "vol"}, t("volume")), volumeNum),
     volume, h("div", {class: "divider"}),
     h("div", {class: "spread", style: "padding-top:8px"},
       h("div", {class: "row-main"}, h("label", {class: "row-title", for: "quiet"}, t("quiet_hours")), quietSub),
       quiet));
-  const month = h("a", {class: "card stack", href: "#/usage", style: "gap:10px"});
+  const month = h("a", {class: "plain-sec stack", href: "#/usage", style: "gap:10px"});
 
   clear(root).append(
     h("div", {class: "topbar only-phone"}, h("span", {class: "wordmark"}, "Trstenko"), link),

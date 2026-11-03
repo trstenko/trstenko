@@ -78,16 +78,14 @@ export async function render(root) {
     body.append(h("section", {class: "card stack", "aria-labelledby": "h-chart"},
       h("div", {class: "spread wrap"}, h("h2", {class: "h2", id: "h-chart"}, t("per_day")),
         seg(t("range"), [7, 30, 90].map((n) => [n, t("days", {n})]), days, (v) => { days = Number(v); load(); })),
-      h("p", {class: "small", "aria-live": "polite"}, readDay, " · ", readVal),
+      max === 0 ? null : h("p", {class: "small", "aria-live": "polite"}, readDay, " · ", readVal),
+      max === 0 ? h("p", {class: "muted chart-empty"}, t("chart_empty", {days})) :
       h("div", {class: "chart-box"}, h("div", {class: "gridline", style: "top:0"}), h("div", {class: "gridline mid"}),
         h("span", {class: "micro muted y-max"}, money(max, places)), chart),
-      h("div", {class: "spread micro muted"}, h("span", {}, shortDay(series[0].at, tz)), h("span", {}, t("today")))));
+      max === 0 ? null : h("div", {class: "spread micro muted"}, h("span", {}, shortDay(series[0].at, tz)), h("span", {}, t("today")))));
 
-    const stat = (name, value) => h("div", {}, h("span", {class: "label"}, name), h("span", {class: "num lg"}, value));
-    body.append(h("section", {class: "card stack", style: "gap:10px", "aria-labelledby": "h-today"},
-      h("h2", {class: "h2", id: "h-today"}, t("today")),
-      h("div", {class: "stat3"}, stat(t("spend"), money(s.day.spent_usd)),
-        stat(t("questions"), String(s.turns_today)), stat(t("requests"), String(s.requests_today)))));
+    body.append(h("p", {class: "today-line"}, t("today_line", {spend: money(s.day.spent_usd),
+      q: s.turns_today, r: s.requests_today})));
 
     // The limits. An empty box is no limit.
     const monthly = moneyInput("l-month", b.monthly_usd != null ? Number(b.monthly_usd).toFixed(2) : "", t("no_limit"));

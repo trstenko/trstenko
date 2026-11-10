@@ -1,6 +1,6 @@
-"""micro-wake-word: Apache-2.0, free per unit. This is the engine that ships
-in anything sold -- see `docs/research/software-stack.md` for why Porcupine
-cannot be. `tools/wakeword/` trains the model this loads.
+"""micro-wake-word: Apache-2.0, free per unit, the device's only wake word
+engine. `tools/wakeword/` trains the Trstenko model it loads; the Hey Jarvis
+fallback is a stock model (see `models/README.md`).
 
 `pymicro-wakeword` ships its own bundled `libtensorflowlite_c` (aarch64,
 glibc >=2.35 -- Bookworm 64-bit satisfies that) so there is nothing to

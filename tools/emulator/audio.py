@@ -4,7 +4,7 @@ The robot's audio path is fixed by the research and the parts:
 
     ReSpeaker Lite (XMOS XU316, USB audio)
       -> ALSA capture, 16kHz 16-bit mono, 10ms chunks
-      -> wake word (Porcupine now, micro-wake-word when units are sold)
+      -> wake word (micro-wake-word: Trstenko, or the Hey Jarvis fallback)
       -> cloud STT -> model -> Piper
       -> playback back out through the ReSpeaker Lite, so its echo canceller
          has a reference of what the device is saying

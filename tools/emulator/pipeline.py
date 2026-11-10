@@ -1,6 +1,6 @@
 """A conversation with nobody, on a timer -- or with you, through the mic.
 
-Stands in for the Phase 2 pipeline (Porcupine, cloud STT, the model call,
+Stands in for the Phase 2 pipeline (the wake word, cloud STT, the model call,
 Piper) so the device loop and the face can be driven end to end. Durations are
 the ones the research expects on the real board, so the emulator shows the
 latency the device will have rather than an instant reply.

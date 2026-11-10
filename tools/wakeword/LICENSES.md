@@ -12,11 +12,9 @@ assumed from a project's README tagline).
 | `microwakeword`'s bundled `libtensorflowlite_c` (inside `pymicro-wakeword`) | Apache-2.0 (TensorFlow) | Same as above. |
 | The trained `trstenko.tflite` + manifest | Ours -- see training data below | Only as restricted as the data it was trained on. |
 
-**Porcupine (`pvporcupine`, `firmware/wakeword/porcupine.py`) does not ship.**
-Its free tier is personal/non-commercial only (Picovoice's own FAQ: "no
-dedicated free or paid plans for personal or non-commercial use" for anyone
-else). Config-gated to the competition build; see `docs/research/
-software-stack.md` for the full pricing research.
+**Porcupine was removed on 2026-11-10.** Its free tier is personal/
+non-commercial only, and the units are sold. The stock `hey_jarvis` model in
+`firmware/wakeword/models/` is Apache-2.0, from esphome/micro-wake-word-models.
 
 ## Training-time only (never distributed to a customer)
 

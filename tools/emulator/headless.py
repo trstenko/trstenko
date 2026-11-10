@@ -3989,6 +3989,7 @@ def main(argv=None):
         ("the tool loop: every way it can fail", asst.scenario_loop_failures),
         ("the tool loop: audio in the request", asst.scenario_loop_audio),
         ("listening: wake word and recording", asst.scenario_audio_in),
+        ("listening: choosing the wake word", asst.scenario_wake_word_choice),
         ("deciding when someone has stopped talking", asst.scenario_vad),
         ("the emulator's audio from two threads",
          asst.scenario_bridge_threads),

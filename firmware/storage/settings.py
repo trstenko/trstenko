@@ -50,7 +50,10 @@ DEFAULTS = {
                   "conversation_log": False, "memories_in_prompt_tokens": 400},
     "voice": {"piper_voice": "en_US-ljspeech-medium", "volume": 0.6,
               "barge_in": False},
-    "audio": {"vad_cutoff": 0.3, "wake_sensitivity": "normal"},
+    "audio": {"vad_cutoff": 0.3, "wake_sensitivity": "normal",
+              # The fallback is a stock model, for when the Trstenko one
+              # does not hear well enough (see wakeword/models/README.md).
+              "wake_word": "trstenko"},
     "quiet": {"enabled": True, "from": "22:00", "to": "07:00", "volume": 0.4},
     # `idle_animations`: the idle face does something every few minutes (a
     # glance, a yawn). Off leaves it blinking and breathing only.
@@ -103,6 +106,7 @@ RULES = {
 
     ("audio", "vad_cutoff"): ("float", 0.05, 0.95),
     ("audio", "wake_sensitivity"): ("choice", ("low", "normal", "high")),
+    ("audio", "wake_word"): ("choice", ("trstenko", "hey_jarvis")),
 
     ("quiet", "enabled"): ("bool",),
     ("quiet", "from"): ("clock",),

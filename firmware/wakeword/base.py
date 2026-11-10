@@ -43,5 +43,7 @@ def open_detector(config):
         from .micro_wakeword import MicroWakeWordDetector
         return MicroWakeWordDetector(
             model_path=config["model_path"],
-            probability_cutoff=config.get("probability_cutoff", 0.5))
+            # No cutoff means the model's own, from its manifest. A default
+            # here used to turn "normal" sensitivity into 0.5.
+            probability_cutoff=config.get("probability_cutoff"))
     raise ValueError("unknown wake word engine: %r" % (engine,))

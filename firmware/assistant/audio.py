@@ -98,6 +98,7 @@ class AudioIn:
         self._stop = threading.Event()
         self._thread = None
         self._cap = None
+        self._next_detector = None
         self.detections_run = 0
 
     # ---- called by main ----
@@ -108,6 +109,13 @@ class AudioIn:
         and waits for speech for `FOLLOW_UP` seconds."""
         with self._lock:
             self._want = (turn_id, bool(followup))
+
+    def set_detector(self, detector):
+        """Swap the wake word model (the owner changed it on the page). The
+        audio thread takes it up before its next chunk, so a detector is never
+        replaced halfway through `process`."""
+        with self._lock:
+            self._next_detector = detector
 
     def abort(self):
         """The turn was cancelled (mute, a button, shutdown): drop whatever is
@@ -173,6 +181,7 @@ class AudioIn:
             return False
 
         self._take_request(now)
+        self._take_detector()
         if self.state == CAPTURING:
             self._capture(chunk, now)
             return True
@@ -191,6 +200,19 @@ class AudioIn:
             self._armed_until = now + ARMED_FOR
             self.post(ev.Event(ev.WAKE_WORD, data={"at": now}))
         return True
+
+    def _take_detector(self):
+        if self._next_detector is None:
+            return
+        with self._lock:
+            new, self._next_detector = self._next_detector, None
+        if new is None:
+            return
+        old, self.detector = self.detector, new
+        try:
+            old.close()
+        except Exception:
+            log.exception("the old wake word detector did not close")
 
     def _available(self):
         try:

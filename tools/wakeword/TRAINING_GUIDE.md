@@ -222,5 +222,5 @@ them.
       not only against held-out synthetic clips -- a TFLite model that
       scores well on its own test set can still behave differently against
       a real mic's noise floor and frequency response.
-- [ ] `firmware/wakeword/` config for the release build selects
-      `micro_wakeword`, not `porcupine`.
+- [ ] The release build's default `audio.wake_word` is the model you mean
+      to ship (`trstenko`, or `hey_jarvis` if this checklist is not met).

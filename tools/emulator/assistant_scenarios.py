@@ -4067,6 +4067,9 @@ class ScriptedDetector:
         self.seen += 1
         return self.seen in self.fire_at
 
+    def close(self):
+        self.closed = True
+
 
 class EarRig:
     def __init__(self, fire_at=(), speaking=lambda: False, barge=False):
@@ -4315,6 +4318,95 @@ def scenario_audio_in(report, root):
     rig.audio.close()
 
 
+def scenario_wake_word_choice(report, root):
+    """The owner can switch the wake word to the stock "Hey Jarvis" model, the
+    fallback if the trained Trstenko one does not hear well enough."""
+    import os
+
+    from firmware import events as ev
+    from firmware.assistant import wiring
+
+    from .headless import quiet_logs
+
+    rig = EarRig()
+    old = rig.detector
+    new = ScriptedDetector(fire_at=[1])
+    rig.mic.feed(_silence_pcm(0.2))
+    rig.run(5)
+    rig.audio.set_detector(new)
+    rig.run(5)
+    report.check("a new wake word model is taken up before the next chunk, "
+                 "and the old one is closed and no longer fed",
+                 rig.audio.detector is new and old.seen == 5
+                 and getattr(old, "closed", False) and new.seen == 1
+                 and len(rig.of(ev.WAKE_WORD)) == 1)
+
+    report.check("both models are listed for the setting",
+                 set(wiring.WAKE_MODELS) == {"trstenko", "hey_jarvis"}
+                 and all(os.path.exists(path)
+                         for path in wiring.WAKE_MODELS.values())
+                 and all(os.path.exists(path[:-len(".json")] + ".tflite")
+                         for path in wiring.WAKE_MODELS.values()))
+
+    try:
+        import pymicro_wakeword  # noqa: F401
+        have = True
+    except ImportError:
+        have = False
+    if not have:
+        report.check("both models load in micro-wake-word (SKIPPED: the "
+                     "package is not installed)", True)
+    else:
+        jarvis = wiring._open_detector("normal", "hey_jarvis")
+        trst = wiring._open_detector("normal", "trstenko")
+        quiet = _silence_pcm(1.0)
+        report.check("both models load in micro-wake-word, and neither wakes "
+                     "on a second of silence",
+                     not jarvis.process(quiet) and not trst.process(quiet)
+                     and jarvis._model.probability_cutoff == 0.97
+                     and trst._model.probability_cutoff == 0.99)
+
+    rig = AssistantRig(root, "wakeword")
+    real_open = wiring._open_detector
+    opened = []
+    try:
+        wiring._open_detector = lambda cut, word="trstenko": (
+            opened.append((cut, word)) or ScriptedDetector())
+        refused = rig.ev.Command("settings.update",
+                                 {"audio": {"wake_word": "alexa"}})
+        rig.device.events.post(refused)
+        try:
+            refused.wait(2.0)
+            message = ""
+        except rig.ev.CommandError as exc:
+            message = str(exc)
+        report.check("a wake word that is not on the list is refused",
+                     message != "" and opened == [], message)
+
+        rig.ask("settings.update", {"audio": {"wake_word": "hey_jarvis"}})
+        report.check("choosing Hey Jarvis on the page loads it straight away",
+                     opened == [("normal", "hey_jarvis")]
+                     and isinstance(rig.audio.detector if hasattr(
+                         rig.audio, "detector") else None, ScriptedDetector),
+                     str(opened))
+
+        def broken(cut, word="trstenko"):
+            raise IOError("no such model")
+        wiring._open_detector = broken
+        with quiet_logs():
+            rig.ask("settings.update", {"audio": {"wake_word": "trstenko"}})
+        status = rig.device.summary()["assistant"]
+        report.check("a model that will not load keeps the old one and the "
+                     "page is told why",
+                     isinstance(rig.audio.detector, ScriptedDetector)
+                     and any(a["kind"] == "no_wake_word"
+                             for a in status["alerts"]),
+                     str(status["alerts"]))
+    finally:
+        wiring._open_detector = real_open
+        rig.close()
+
+
 def scenario_vad(report, root):
     import os
     import wave
@@ -4461,6 +4553,9 @@ class FakeAudio:
 
     def close(self):
         self.closed = True
+
+    def set_detector(self, detector):
+        self.detector = detector
 
 
 class AssistantRig:

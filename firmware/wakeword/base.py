@@ -1,14 +1,10 @@
-"""One engine, swappable by config, because the two available engines are
-licensed for different situations rather than different quality.
+"""The wake word engine, behind one small interface.
 
-`docs/research/software-stack.md` has the full story. The short version: the
-Picovoice Console can turn "Trstenko" into a working Porcupine model in
-under a minute, but Porcupine's free tier is personal/non-commercial only --
-fine for the competition demo, not for a unit that gets sold. micro-wake-word
-is Apache-2.0 and free to ship, but the model has to be trained
-(`tools/wakeword/`), and training a good one takes real effort. Both consume
-the same 16kHz 16-bit mono stream from `hal.Mic`, so the interface below is
-the entire cost of keeping that decision reversible.
+There is one engine: micro-wake-word (Apache-2.0, free per unit), loading
+either the trained Trstenko model or the stock Hey Jarvis fallback. Porcupine
+was dropped on 2026-11-10: its free tier is non-commercial and the units are
+sold. The interface stays, so another engine can be added without touching
+the audio path; it consumes the 16kHz 16-bit mono stream from `hal.Mic`.
 """
 
 
@@ -29,19 +25,16 @@ class WakeWordDetector:
 
 def open_detector(config):
     """`config` is the `[wakeword]` section of the on-device settings: at
-    least `engine` ("porcupine" or "micro_wakeword") plus whatever that
+    least `engine` ("micro_wakeword") plus whatever that
     engine needs. Raises if the engine's package or model file is missing,
     rather than silently falling back -- a device that can't hear its name
     should say so, not idle quietly."""
     engine = config["engine"]
-    if engine == "porcupine":
-        from .porcupine import PorcupineDetector
-        return PorcupineDetector(
-            access_key=config["access_key"],
-            keyword_path=config["keyword_path"])
     if engine == "micro_wakeword":
         from .micro_wakeword import MicroWakeWordDetector
         return MicroWakeWordDetector(
             model_path=config["model_path"],
-            probability_cutoff=config.get("probability_cutoff", 0.5))
+            # No cutoff means the model's own, from its manifest. A default
+            # here used to turn "normal" sensitivity into 0.5.
+            probability_cutoff=config.get("probability_cutoff"))
     raise ValueError("unknown wake word engine: %r" % (engine,))

@@ -55,8 +55,17 @@ log = logging.getLogger("trstenko.assistant")
 # TODO tune on the board with the real room and the real speaker (plan 08).
 WAKE_CUTOFFS = {"low": 0.995, "normal": None, "high": 0.95}
 
-WAKE_MODEL = os.path.join(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))), "wakeword", "models", "trstenko.json")
+_MODELS = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "wakeword", "models")
+
+# The owner's `audio.wake_word` setting -> the model's manifest. "hey_jarvis"
+# is the stock micro-wake-word model, the fallback if the trained Trstenko one
+# does not hear well enough.
+WAKE_MODELS = {
+    "trstenko": os.path.join(_MODELS, "trstenko.json"),
+    "hey_jarvis": os.path.join(_MODELS, "hey_jarvis.json"),
+}
+WAKE_MODEL = WAKE_MODELS["trstenko"]
 
 
 class NeverDetector:
@@ -151,11 +160,12 @@ class Assistant:
             log.exception("the last usage could not be written")
 
 
-def _open_detector(cutoff_name):
+def _open_detector(cutoff_name, word="trstenko"):
     from ..wakeword.base import open_detector
 
     cutoff = WAKE_CUTOFFS.get(cutoff_name)
-    config = {"engine": "micro_wakeword", "model_path": WAKE_MODEL}
+    config = {"engine": "micro_wakeword",
+              "model_path": WAKE_MODELS.get(word, WAKE_MODEL)}
     if cutoff is not None:
         config["probability_cutoff"] = cutoff
     return open_detector(config)
@@ -254,7 +264,8 @@ def wire_assistant(device, hal, data_root, synth=None, detector=None,
         if detector is None:
             try:
                 detector = _open_detector(
-                    settings.data["audio"]["wake_sensitivity"])
+                    settings.data["audio"]["wake_sensitivity"],
+                    settings.data["audio"]["wake_word"])
             except Exception as exc:
                 assistant.audio_note = ("the wake word could not be loaded: "
                                         "%s" % exc)
@@ -330,6 +341,22 @@ def wire_assistant(device, hal, data_root, synth=None, detector=None,
             meter.clear()
         if "audio.vad_cutoff" in names:
             assistant.vad.set_cutoff(settings.data["audio"]["vad_cutoff"])
+        if (names & {"audio.wake_word", "audio.wake_sensitivity"}
+                and assistant.audio is not None):
+            # Loading a model is a few milliseconds of file read; the audio
+            # thread swaps it in before its next chunk. A model that fails to
+            # load leaves the old one listening and says why on the page.
+            try:
+                detector = _open_detector(
+                    settings.data["audio"]["wake_sensitivity"],
+                    settings.data["audio"]["wake_word"])
+            except Exception as exc:
+                assistant.audio_note = ("the wake word could not be loaded: "
+                                        "%s" % exc)
+                log.warning(assistant.audio_note)
+            else:
+                assistant.audio.set_detector(detector)
+                assistant.audio_note = ""
 
     device.on_settings(on_settings)
     device.add_closer("assistant", assistant.close, first=True)

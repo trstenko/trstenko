@@ -2,8 +2,8 @@
 
 Trains the "Trstenko" model for **micro-wake-word** (Apache-2.0, free per
 unit) -- the engine `firmware/wakeword/micro_wakeword.py` loads on any unit
-that gets sold. Porcupine stays the competition-demo engine; see
-`docs/research/software-stack.md` for why the two can't swap roles.
+that gets sold. It is the device's only engine; Porcupine was removed on
+2026-11-10 (non-commercial free tier).
 
 This is a dev tool. Nothing here is copied onto the robot (`tools/
 check_layout.py` enforces that); it produces one artifact the robot does

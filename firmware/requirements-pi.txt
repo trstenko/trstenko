@@ -21,13 +21,7 @@ qrcode>=7.4
 # board's first boot (docs/research/llm-workflow.md, Finding 14).
 piper-tts==1.8.0
 
-# Wake word. Both engines install here because the competition unit and a
-# sold unit are the same image with a config flag -- see
-# docs/research/software-stack.md and firmware/wakeword/ for which one a
-# given build actually uses.
-# - pvporcupine: competition demo only. Free tier is personal/non-commercial;
-#   never the engine behind a unit that gets sold.
-# - pymicro-wakeword: Apache-2.0, free per unit, what ships. Needs a trained
-#   "Trstenko" model from tools/wakeword/ -- there is no bundled one here.
-pvporcupine>=3.0
+# Wake word: pymicro-wakeword, Apache-2.0, free per unit. The models are in
+# firmware/wakeword/models/ (the trained Trstenko one and the stock Hey Jarvis
+# fallback). Porcupine was dropped on 2026-11-10: non-commercial free tier.
 pymicro-wakeword>=2.0
